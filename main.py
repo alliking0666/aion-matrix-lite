@@ -16,6 +16,7 @@ BOT_TOKEN = clean_env("BOT_TOKEN")
 GROQ_API_KEY = clean_env("GROQ_API_KEY")
 GEMINI_API_KEY = clean_env("GEMINI_API_KEY")
 OPENROUTER_API_KEY = clean_env("OPENROUTER_API_KEY")
+CEREBRAS_API_KEY = clean_env("CEREBRAS_API_KEY")
 
 PORT = int(os.getenv("PORT", "10000"))
 
@@ -27,16 +28,17 @@ SYSTEM_PROMPT = (
 )
 
 
-async def ask_groq(text: str) -> str:
-    url = "https://api.groq.com/openai/v1/chat/completions"
-
+async def post_chat_api(url: str, api_key: str, model: str, text: str, extra_headers=None) -> str:
     headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
 
+    if extra_headers:
+        headers.update(extra_headers)
+
     payload = {
-        "model": "llama-3.1-8b-instant",
+        "model": model,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": text},
@@ -55,9 +57,17 @@ async def ask_groq(text: str) -> str:
             return data["choices"][0]["message"]["content"]
 
 
+async def ask_groq(text: str) -> str:
+    return await post_chat_api(
+        url="https://api.groq.com/openai/v1/chat/completions",
+        api_key=GROQ_API_KEY,
+        model="llama-3.1-8b-instant",
+        text=text,
+    )
+
+
 def sync_ask_gemini(text: str) -> str:
     genai.configure(api_key=GEMINI_API_KEY)
-
     model = genai.GenerativeModel("gemini-2.0-flash")
 
     response = model.generate_content(
@@ -72,33 +82,25 @@ async def ask_gemini(text: str) -> str:
 
 
 async def ask_openrouter(text: str) -> str:
-    url = "https://openrouter.ai/api/v1/chat/completions"
+    return await post_chat_api(
+        url="https://openrouter.ai/api/v1/chat/completions",
+        api_key=OPENROUTER_API_KEY,
+        model="deepseek/deepseek-chat-v3-0324:free",
+        text=text,
+        extra_headers={
+            "HTTP-Referer": "https://aion-matrix-lite.onrender.com",
+            "X-Title": "AION MATRIX LITE",
+        },
+    )
 
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://aion-matrix-lite.onrender.com",
-        "X-Title": "AION MATRIX LITE",
-    }
 
-    payload = {
-        "model": "deepseek/deepseek-chat-v3-0324:free",
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": text},
-        ],
-        "temperature": 0.7,
-        "max_tokens": 900,
-    }
-
-    async with ClientSession() as session:
-        async with session.post(url, headers=headers, json=payload, timeout=30) as response:
-            data = await response.json()
-
-            if response.status != 200:
-                raise RuntimeError(str(data))
-
-            return data["choices"][0]["message"]["content"]
+async def ask_cerebras(text: str) -> str:
+    return await post_chat_api(
+        url="https://api.cerebras.ai/v1/chat/completions",
+        api_key=CEREBRAS_API_KEY,
+        model="llama3.1-8b",
+        text=text,
+    )
 
 
 async def ask_aion(text: str) -> str:
@@ -121,6 +123,12 @@ async def ask_aion(text: str) -> str:
             return await ask_openrouter(text)
         except Exception as e:
             errors.append(f"OpenRouter: {e}")
+
+    if CEREBRAS_API_KEY:
+        try:
+            return await ask_cerebras(text)
+        except Exception as e:
+            errors.append(f"Cerebras: {e}")
 
     return "⚠️ AI временно не ответил.\n\n" + "\n".join(errors)
 
@@ -184,7 +192,7 @@ async def main():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN is missing")
 
-    if not GROQ_API_KEY and not GEMINI_API_KEY and not OPENROUTER_API_KEY:
+    if not GROQ_API_KEY and not GEMINI_API_KEY and not OPENROUTER_API_KEY and not CEREBRAS_API_KEY:
         raise RuntimeError("No AI keys found")
 
     print("AION MATRIX LITE STARTED")
