@@ -15,44 +15,57 @@ PORT = int(os.getenv("PORT", 10000))
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# Gemini setup
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
+
+# Актуальная модель
+model = genai.GenerativeModel("gemini-2.0-flash")
 
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
     await message.answer(
-        "🚀 AION MATRIX LITE запущен.\n\n"
-        "Напиши мне любой вопрос — я отвечу через Gemini AI."
+        "🚀 AION MATRIX LITE ONLINE\n\n"
+        "Напиши любой вопрос."
     )
 
 
 @dp.message()
 async def ai_chat(message: types.Message):
+
     if not message.text:
-        await message.answer("Пока я понимаю только текст.")
+        await message.answer("⚠️ Поддерживается только текст.")
         return
 
-    try:
-        await message.answer("🧠 Думаю...")
+    thinking = await message.answer("🧠 Думаю...")
 
-        response = model.generate_content(
-            "Ты AION MATRIX LITE — полезный AI-помощник. "
-            "Отвечай понятно, коротко и на языке пользователя.\n\n"
+    try:
+        prompt = (
+            "Ты AION MATRIX LITE — умный AI помощник. "
+            "Отвечай понятно, кратко и на языке пользователя.\n\n"
             f"Пользователь: {message.text}"
         )
 
-        answer = response.text or "Не смог получить ответ от Gemini."
+        response = model.generate_content(prompt)
+
+        answer = "⚠️ Gemini не вернул ответ."
+
+        if response and hasattr(response, "text"):
+            answer = response.text
 
         if len(answer) > 4000:
             answer = answer[:4000]
 
+        await thinking.delete()
+
         await message.answer(answer)
 
     except Exception as e:
-        await message.answer(f"⚠️ Ошибка Gemini: {e}")
+        await thinking.delete()
+        await message.answer(f"⚠️ Ошибка Gemini:\n{e}")
 
 
+# Health check for Render
 async def health(request):
     return web.Response(text="AION MATRIX LITE ONLINE")
 
@@ -64,13 +77,20 @@ async def start_web_server():
     runner = web.AppRunner(app)
     await runner.setup()
 
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    site = web.TCPSite(
+        runner,
+        host="0.0.0.0",
+        port=PORT
+    )
+
     await site.start()
 
 
 async def main():
     print("🚀 AION MATRIX LITE STARTED")
+
     await start_web_server()
+
     await dp.start_polling(bot)
 
 
