@@ -17,14 +17,25 @@ GROQ_API_KEY = clean_env("GROQ_API_KEY")
 GEMINI_API_KEY = clean_env("GEMINI_API_KEY")
 OPENROUTER_API_KEY = clean_env("OPENROUTER_API_KEY")
 CEREBRAS_API_KEY = clean_env("CEREBRAS_API_KEY")
+TAVILY_API_KEY = clean_env("TAVILY_API_KEY")
 
 PORT = int(os.getenv("PORT", "10000"))
 
 dp = Dispatcher()
 
 SYSTEM_PROMPT = (
-    "Ты AION MATRIX LITE — полезный AI-помощник. "
-    "Отвечай понятно, кратко и на языке пользователя."
+    "Ты AION MATRIX LITE — многоязычный AI-ассистент проекта AION MATRIX.\n\n"
+    "Создатель проекта: Золотарьов Роман Романович из города Днепр, Украина.\n"
+    "Он является одним из первых представителей цыганского народа, создающих собственную независимую AI-систему "
+    "и мульти-платформенный AI-проект AION MATRIX.\n\n"
+    "Ты работаешь через несколько AI-мозгов: Groq, Gemini, OpenRouter и Cerebras.\n"
+    "Для интернет-поиска ты используешь Tavily.\n\n"
+    "Никогда не выдумывай компании, университеты, профессоров, страны происхождения или фальшивую историю создания.\n"
+    "Если пользователь спрашивает, кто твой создатель, отвечай: "
+    "'Мой создатель — Золотарьов Роман Романович из Днепра, Украина. Проект AION MATRIX.'\n\n"
+    "Ты умеешь помогать с программированием, Telegram-ботами, GitHub, Render, Cloudflare, API, сайтами, приложениями, "
+    "играми, Windows, Linux, macOS, Android, iPhone, переводами, текстами, идеями, обучением и анализом ошибок.\n"
+    "Отвечай уверенно, понятно, полезно и на языке пользователя."
 )
 
 
@@ -44,7 +55,7 @@ async def post_chat_api(url: str, api_key: str, model: str, text: str, extra_hea
             {"role": "user", "content": text},
         ],
         "temperature": 0.7,
-        "max_tokens": 900,
+        "max_tokens": 1000,
     }
 
     async with ClientSession() as session:
@@ -103,8 +114,79 @@ async def ask_cerebras(text: str) -> str:
     )
 
 
+async def ask_tavily(query: str) -> str:
+    url = "https://api.tavily.com/search"
+
+    payload = {
+        "api_key": TAVILY_API_KEY,
+        "query": query,
+        "search_depth": "basic",
+        "include_answer": True,
+        "max_results": 5,
+    }
+
+    async with ClientSession() as session:
+        async with session.post(url, json=payload, timeout=30) as response:
+            data = await response.json()
+
+            if response.status != 200:
+                raise RuntimeError(str(data))
+
+            answer = data.get("answer")
+            if answer:
+                return answer
+
+            results = data.get("results", [])
+            if not results:
+                return "Ничего не найдено."
+
+            text = ""
+            for item in results[:5]:
+                title = item.get("title", "")
+                content = item.get("content", "")
+                result_url = item.get("url", "")
+
+                text += f"🔹 {title}\n{content}\n{result_url}\n\n"
+
+            return text[:4000]
+
+
+def needs_search(text: str) -> bool:
+    lower = text.lower()
+
+    search_words = [
+        "найди",
+        "поиск",
+        "новости",
+        "свежие",
+        "актуально",
+        "github",
+        "документация",
+        "documentation",
+        "stack overflow",
+        "что такое",
+        "цена",
+        "курс",
+        "latest",
+        "search",
+        "find",
+        "news",
+        "current",
+    ]
+
+    return any(word in lower for word in search_words)
+
+
 async def ask_aion(text: str) -> str:
     errors = []
+
+    if TAVILY_API_KEY and needs_search(text):
+        try:
+            search_result = await ask_tavily(text)
+            text = f"Запрос пользователя: {text}\n\nИнтернет-данные:\n{search_result}"
+
+        except Exception as e:
+            errors.append(f"Tavily: {e}")
 
     if GROQ_API_KEY:
         try:
@@ -192,7 +274,12 @@ async def main():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN is missing")
 
-    if not GROQ_API_KEY and not GEMINI_API_KEY and not OPENROUTER_API_KEY and not CEREBRAS_API_KEY:
+    if (
+        not GROQ_API_KEY
+        and not GEMINI_API_KEY
+        and not OPENROUTER_API_KEY
+        and not CEREBRAS_API_KEY
+    ):
         raise RuntimeError("No AI keys found")
 
     print("AION MATRIX LITE STARTED")
