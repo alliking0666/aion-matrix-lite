@@ -1,32 +1,36 @@
 import os
 import asyncio
+
 from aiohttp import web
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 
-import google.generativeai as genai
+from openai import OpenAI
 
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
 PORT = int(os.getenv("PORT", 10000))
+
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Gemini setup
-genai.configure(api_key=GEMINI_API_KEY)
 
-# Актуальная модель
-model = genai.GenerativeModel("gemini-2.0-flash")
+client = OpenAI(
+    api_key=GROQ_API_KEY,
+    base_url="https://api.groq.com/openai/v1"
+)
 
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
+
     await message.answer(
         "🚀 AION MATRIX LITE ONLINE\n\n"
-        "Напиши любой вопрос."
+        "Groq AI подключен."
     )
 
 
@@ -34,24 +38,38 @@ async def start(message: types.Message):
 async def ai_chat(message: types.Message):
 
     if not message.text:
-        await message.answer("⚠️ Поддерживается только текст.")
+        await message.answer(
+            "⚠️ Поддерживается только текст."
+        )
         return
 
-    thinking = await message.answer("🧠 Думаю...")
+    thinking = await message.answer(
+        "🧠 Думаю..."
+    )
 
     try:
-        prompt = (
-            "Ты AION MATRIX LITE — умный AI помощник. "
-            "Отвечай понятно, кратко и на языке пользователя.\n\n"
-            f"Пользователь: {message.text}"
+
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты AION MATRIX LITE — "
+                        "полезный AI помощник. "
+                        "Отвечай кратко и понятно."
+                    )
+                },
+
+                {
+                    "role": "user",
+                    "content": message.text
+                }
+            ]
         )
 
-        response = model.generate_content(prompt)
-
-        answer = "⚠️ Gemini не вернул ответ."
-
-        if response and hasattr(response, "text"):
-            answer = response.text
+        answer = response.choices[0].message.content
 
         if len(answer) > 4000:
             answer = answer[:4000]
@@ -61,32 +79,42 @@ async def ai_chat(message: types.Message):
         await message.answer(answer)
 
     except Exception as e:
+
         await thinking.delete()
-        await message.answer(f"⚠️ Ошибка Gemini:\n{e}")
+
+        await message.answer(
+            f"⚠️ Ошибка:\n{e}"
+        )
 
 
-# Health check for Render
 async def health(request):
-    return web.Response(text="AION MATRIX LITE ONLINE")
+
+    return web.Response(
+        text="AION MATRIX LITE ONLINE"
+    )
 
 
 async def start_web_server():
+
     app = web.Application()
+
     app.router.add_get("/", health)
 
     runner = web.AppRunner(app)
+
     await runner.setup()
 
     site = web.TCPSite(
         runner,
-        host="0.0.0.0",
-        port=PORT
+        "0.0.0.0",
+        PORT
     )
 
     await site.start()
 
 
 async def main():
+
     print("🚀 AION MATRIX LITE STARTED")
 
     await start_web_server()
