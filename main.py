@@ -13,12 +13,15 @@ def clean_env(name: str) -> str:
 
 
 BOT_TOKEN = clean_env("BOT_TOKEN")
+
 GROQ_API_KEY = clean_env("GROQ_API_KEY")
 GEMINI_API_KEY = clean_env("GEMINI_API_KEY")
 OPENROUTER_API_KEY = clean_env("OPENROUTER_API_KEY")
 CEREBRAS_API_KEY = clean_env("CEREBRAS_API_KEY")
+
 TAVILY_API_KEY = clean_env("TAVILY_API_KEY")
 GITHUB_TOKEN = clean_env("GITHUB_TOKEN")
+RENDER_API_KEY = clean_env("RENDER_API_KEY")
 
 PORT = int(os.getenv("PORT", "10000"))
 
@@ -34,7 +37,8 @@ SYSTEM_PROMPT = (
     "Никогда не выдумывай компании, университеты, профессоров или фальшивую историю создания.\n\n"
     "Ты работаешь через AI-мозги: Groq, Gemini, OpenRouter, Cerebras.\n"
     "Для интернет-поиска используешь Tavily.\n"
-    "Для поиска репозиториев используешь GitHub API.\n\n"
+    "Для поиска репозиториев используешь GitHub API.\n"
+    "Для проверки сервисов используешь Render API.\n\n"
     "Ты умеешь помогать с программированием, Telegram-ботами, GitHub, Render, API, сайтами, приложениями, играми, "
     "Windows, Linux, macOS, Android, iPhone, переводами, текстами, идеями, обучением и анализом ошибок.\n\n"
     "Если ты не знаешь точных деталей — говори честно: 'Точных деталей у меня нет.' "
@@ -209,6 +213,44 @@ async def ask_github(query: str) -> str:
             return text[:4000]
 
 
+async def ask_render_services() -> str:
+    url = "https://api.render.com/v1/services"
+
+    headers = {
+        "Authorization": f"Bearer {RENDER_API_KEY}",
+        "Accept": "application/json",
+    }
+
+    async with ClientSession() as session:
+        async with session.get(url, headers=headers, timeout=30) as response:
+            data = await safe_json_response(response)
+
+            if response.status != 200:
+                raise RuntimeError(str(data))
+
+            if not data:
+                return "Render services не найдены."
+
+            text = "☁️ Render Services:\n\n"
+
+            for item in data[:10]:
+                service = item.get("service", {})
+                name = service.get("name", "unknown")
+                service_type = service.get("type", "unknown")
+                created_at = service.get("createdAt", "")
+                service_details = service.get("serviceDetails", {})
+                service_url = service_details.get("url", "")
+
+                text += (
+                    f"📦 {name}\n"
+                    f"Тип: {service_type}\n"
+                    f"URL: {service_url or 'нет'}\n"
+                    f"Создан: {created_at}\n\n"
+                )
+
+            return text[:4000]
+
+
 def needs_search(text: str) -> bool:
     lower = text.lower()
 
@@ -286,7 +328,8 @@ async def start(message: types.Message):
         "Команды:\n"
         "/status — проверить мозги\n"
         "/search запрос — поиск в интернете\n"
-        "/github запрос — поиск репозиториев"
+        "/github запрос — поиск репозиториев\n"
+        "/render — проверить Render services"
     )
 
 
@@ -299,7 +342,8 @@ async def status(message: types.Message):
         f"OpenRouter: {'✅' if OPENROUTER_API_KEY else '❌'}\n"
         f"Cerebras: {'✅' if CEREBRAS_API_KEY else '❌'}\n"
         f"Tavily Search: {'✅' if TAVILY_API_KEY else '❌'}\n"
-        f"GitHub API: {'✅' if GITHUB_TOKEN else '❌'}"
+        f"GitHub API: {'✅' if GITHUB_TOKEN else '❌'}\n"
+        f"Render API: {'✅' if RENDER_API_KEY else '❌'}"
     )
 
 
@@ -353,6 +397,26 @@ async def github_command(message: types.Message):
         except Exception:
             pass
         await message.answer(f"⚠️ Ошибка GitHub:\n{e}")
+
+
+@dp.message(Command("render"))
+async def render_command(message: types.Message):
+    if not RENDER_API_KEY:
+        await message.answer("⚠️ Render API key не подключен.")
+        return
+
+    thinking = await message.answer("☁️ Проверяю Render...")
+
+    try:
+        result = await ask_render_services()
+        await thinking.delete()
+        await message.answer(result[:4000])
+    except Exception as e:
+        try:
+            await thinking.delete()
+        except Exception:
+            pass
+        await message.answer(f"⚠️ Ошибка Render API:\n{e}")
 
 
 @dp.message()
