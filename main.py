@@ -14,17 +14,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 PORT = int(os.getenv("PORT", 10000))
 
-bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-
-groq_client = OpenAI(
-    api_key=GROQ_API_KEY,
-    base_url="https://api.groq.com/openai/v1"
-) if GROQ_API_KEY else None
-
 
 SYSTEM_PROMPT = (
     "Ты AION MATRIX LITE — полезный AI-помощник. "
@@ -33,26 +23,41 @@ SYSTEM_PROMPT = (
 
 
 async def ask_gemini(text: str) -> str:
+    genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel("gemini-2.0-flash")
+
     response = model.generate_content(
         f"{SYSTEM_PROMPT}\n\nПользователь: {text}"
     )
-    return response.text
+
+    return response.text or "Gemini не вернул текстовый ответ."
 
 
 async def ask_groq(text: str) -> str:
-    response = groq_client.chat.completions.create(
+    client = OpenAI(
+        api_key=GROQ_API_KEY,
+        base_url="https://api.groq.com/openai/v1"
+    )
+
+    response = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": text}
         ]
     )
+
     return response.choices[0].message.content
 
 
 async def ask_aion(text: str) -> str:
     errors = []
+
+    if GROQ_API_KEY:
+        try:
+            return await ask_groq(text)
+        except Exception as e:
+            errors.append(f"Groq: {e}")
 
     if GEMINI_API_KEY:
         try:
@@ -60,20 +65,14 @@ async def ask_aion(text: str) -> str:
         except Exception as e:
             errors.append(f"Gemini: {e}")
 
-    if GROQ_API_KEY and groq_client:
-        try:
-            return await ask_groq(text)
-        except Exception as e:
-            errors.append(f"Groq: {e}")
-
-    return "⚠️ Оба AI-мозга не ответили.\n\n" + "\n".join(errors)
+    return "⚠️ AI временно не ответил.\n\n" + "\n".join(errors)
 
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
     await message.answer(
         "🚀 AION MATRIX LITE ONLINE\n\n"
-        "🧠 Gemini + Groq подключены.\n"
+        "🧠 Groq + Gemini подключены.\n"
         "Напиши любой вопрос."
     )
 
@@ -96,7 +95,11 @@ async def ai_chat(message: types.Message):
         await message.answer(answer)
 
     except Exception as e:
-        await thinking.delete()
+        try:
+            await thinking.delete()
+        except Exception:
+            pass
+
         await message.answer(f"⚠️ Ошибка:\n{e}")
 
 
@@ -111,17 +114,21 @@ async def start_web_server():
     runner = web.AppRunner(app)
     await runner.setup()
 
-    site = web.TCPSite(
-        runner,
-        "0.0.0.0",
-        PORT
-    )
-
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
 
 
 async def main():
+    if not BOT_TOKEN:
+        raise RuntimeError("BOT_TOKEN is missing in Render Environment Variables")
+
+    if not GROQ_API_KEY and not GEMINI_API_KEY:
+        raise RuntimeError("GROQ_API_KEY or GEMINI_API_KEY is missing")
+
     print("🚀 AION MATRIX LITE STARTED")
+
+    bot = Bot(token=BOT_TOKEN)
+
     await start_web_server()
     await dp.start_polling(bot)
 
