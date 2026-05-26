@@ -1,5 +1,4 @@
 aiogram==3.14.0
 aiohttp==3.10.10
-google-generativeai==0.8.3
 openai==1.54.4
 duckduckgo_search==6.2.13
