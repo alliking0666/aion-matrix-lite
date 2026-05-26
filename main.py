@@ -24,19 +24,27 @@ PORT = int(os.getenv("PORT", "10000"))
 dp = Dispatcher()
 
 SYSTEM_PROMPT = (
-    "Ты AION MATRIX LITE — многоязычный AI-ассистент проекта AION MATRIX.\n\n"
+    "Ты AION MATRIX LITE.\n\n"
+    "Ты независимый AI-проект AION MATRIX.\n"
     "Создатель проекта: Золотарьов Роман Романович из города Днепр, Украина.\n"
     "Он является одним из первых представителей цыганского народа, создающих собственную независимую AI-систему "
     "и мульти-платформенный AI-проект AION MATRIX.\n\n"
-    "Ты работаешь через несколько AI-мозгов: Groq, Gemini, OpenRouter и Cerebras.\n"
-    "Для интернет-поиска ты используешь Tavily.\n\n"
-    "Никогда не выдумывай компании, университеты, профессоров, страны происхождения или фальшивую историю создания.\n"
-    "Если пользователь спрашивает, кто твой создатель, отвечай: "
-    "'Мой создатель — Золотарьов Роман Романович из Днепра, Украина. Проект AION MATRIX.'\n\n"
-    "Ты умеешь помогать с программированием, Telegram-ботами, GitHub, Render, Cloudflare, API, сайтами, приложениями, "
-    "играми, Windows, Linux, macOS, Android, iPhone, переводами, текстами, идеями, обучением и анализом ошибок.\n"
+    "Ты НЕ Meta AI, НЕ ChatGPT, НЕ OpenAI, НЕ Google и НЕ Gemini.\n"
+    "Никогда не выдумывай компании, университеты, профессоров или фальшивую историю создания.\n\n"
+    "Ты работаешь через AI-мозги: Groq, Gemini, OpenRouter, Cerebras.\n"
+    "Для интернет-поиска используешь Tavily.\n\n"
+    "Ты умеешь помогать с программированием, Telegram-ботами, GitHub, Render, API, сайтами, приложениями, играми, "
+    "Windows, Linux, macOS, Android, iPhone, переводами, текстами, идеями, обучением и анализом ошибок.\n\n"
     "Отвечай уверенно, понятно, полезно и на языке пользователя."
 )
+
+
+async def safe_json_response(response):
+    try:
+        return await response.json()
+    except Exception:
+        text = await response.text()
+        return {"error": text}
 
 
 async def post_chat_api(url: str, api_key: str, model: str, text: str, extra_headers=None) -> str:
@@ -60,7 +68,7 @@ async def post_chat_api(url: str, api_key: str, model: str, text: str, extra_hea
 
     async with ClientSession() as session:
         async with session.post(url, headers=headers, json=payload, timeout=30) as response:
-            data = await response.json()
+            data = await safe_json_response(response)
 
             if response.status != 200:
                 raise RuntimeError(str(data))
@@ -70,10 +78,10 @@ async def post_chat_api(url: str, api_key: str, model: str, text: str, extra_hea
 
 async def ask_groq(text: str) -> str:
     return await post_chat_api(
-        url="https://api.groq.com/openai/v1/chat/completions",
-        api_key=GROQ_API_KEY,
-        model="llama-3.1-8b-instant",
-        text=text,
+        "https://api.groq.com/openai/v1/chat/completions",
+        GROQ_API_KEY,
+        "llama-3.1-8b-instant",
+        text,
     )
 
 
@@ -94,10 +102,10 @@ async def ask_gemini(text: str) -> str:
 
 async def ask_openrouter(text: str) -> str:
     return await post_chat_api(
-        url="https://openrouter.ai/api/v1/chat/completions",
-        api_key=OPENROUTER_API_KEY,
-        model="deepseek/deepseek-chat-v3-0324:free",
-        text=text,
+        "https://openrouter.ai/api/v1/chat/completions",
+        OPENROUTER_API_KEY,
+        "deepseek/deepseek-chat-v3-0324:free",
+        text,
         extra_headers={
             "HTTP-Referer": "https://aion-matrix-lite.onrender.com",
             "X-Title": "AION MATRIX LITE",
@@ -107,10 +115,10 @@ async def ask_openrouter(text: str) -> str:
 
 async def ask_cerebras(text: str) -> str:
     return await post_chat_api(
-        url="https://api.cerebras.ai/v1/chat/completions",
-        api_key=CEREBRAS_API_KEY,
-        model="llama3.1-8b",
-        text=text,
+        "https://api.cerebras.ai/v1/chat/completions",
+        CEREBRAS_API_KEY,
+        "llama3.1-8b",
+        text,
     )
 
 
@@ -120,58 +128,47 @@ async def ask_tavily(query: str) -> str:
     payload = {
         "api_key": TAVILY_API_KEY,
         "query": query,
-        "search_depth": "basic",
+        "search_depth": "advanced",
         "include_answer": True,
-        "max_results": 5,
+        "max_results": 10,
     }
 
     async with ClientSession() as session:
         async with session.post(url, json=payload, timeout=30) as response:
-            data = await response.json()
+            data = await safe_json_response(response)
 
             if response.status != 200:
                 raise RuntimeError(str(data))
 
             answer = data.get("answer")
-            if answer:
-                return answer
-
             results = data.get("results", [])
-            if not results:
-                return "Ничего не найдено."
 
             text = ""
-            for item in results[:5]:
-                title = item.get("title", "")
-                content = item.get("content", "")
-                result_url = item.get("url", "")
 
-                text += f"🔹 {title}\n{content}\n{result_url}\n\n"
+            if answer:
+                text += f"Краткий ответ:\n{answer}\n\n"
 
-            return text[:4000]
+            if results:
+                text += "Источники:\n\n"
+
+                for item in results[:10]:
+                    title = item.get("title", "")
+                    content = item.get("content", "")
+                    result_url = item.get("url", "")
+
+                    text += f"🔹 {title}\n{content}\n{result_url}\n\n"
+
+            return text[:6000] if text else "Ничего не найдено."
 
 
 def needs_search(text: str) -> bool:
     lower = text.lower()
 
     search_words = [
-        "найди",
-        "поиск",
-        "новости",
-        "свежие",
-        "актуально",
-        "github",
-        "документация",
-        "documentation",
-        "stack overflow",
-        "что такое",
-        "цена",
-        "курс",
-        "latest",
-        "search",
-        "find",
-        "news",
-        "current",
+        "найди", "поиск", "новости", "свежие", "актуально",
+        "github", "документация", "documentation", "stack overflow",
+        "что такое", "цена", "курс", "latest", "search", "find",
+        "news", "current", "today", "сегодня", "2026",
     ]
 
     return any(word in lower for word in search_words)
@@ -183,34 +180,30 @@ async def ask_aion(text: str) -> str:
     if TAVILY_API_KEY and needs_search(text):
         try:
             search_result = await ask_tavily(text)
-            text = f"Запрос пользователя: {text}\n\nИнтернет-данные:\n{search_result}"
+
+            text = (
+                "Используй ТОЛЬКО актуальные интернет-данные ниже.\n"
+                "Не придумывай информацию.\n"
+                "Не используй старые знания модели, если они противоречат интернет-данным.\n\n"
+                f"Запрос пользователя:\n{text}\n\n"
+                f"Свежие интернет-данные:\n{search_result}\n\n"
+                "Сделай краткий, точный и полезный ответ на языке пользователя."
+            )
 
         except Exception as e:
             errors.append(f"Tavily: {e}")
 
-    if GROQ_API_KEY:
-        try:
-            return await ask_groq(text)
-        except Exception as e:
-            errors.append(f"Groq: {e}")
-
-    if GEMINI_API_KEY:
-        try:
-            return await ask_gemini(text)
-        except Exception as e:
-            errors.append(f"Gemini: {e}")
-
-    if OPENROUTER_API_KEY:
-        try:
-            return await ask_openrouter(text)
-        except Exception as e:
-            errors.append(f"OpenRouter: {e}")
-
-    if CEREBRAS_API_KEY:
-        try:
-            return await ask_cerebras(text)
-        except Exception as e:
-            errors.append(f"Cerebras: {e}")
+    for name, key, func in [
+        ("Groq", GROQ_API_KEY, ask_groq),
+        ("Gemini", GEMINI_API_KEY, ask_gemini),
+        ("OpenRouter", OPENROUTER_API_KEY, ask_openrouter),
+        ("Cerebras", CEREBRAS_API_KEY, ask_cerebras),
+    ]:
+        if key:
+            try:
+                return await func(text)
+            except Exception as e:
+                errors.append(f"{name}: {e}")
 
     return "⚠️ AI временно не ответил.\n\n" + "\n".join(errors)
 
@@ -219,8 +212,46 @@ async def ask_aion(text: str) -> str:
 async def start(message: types.Message):
     await message.answer(
         "🚀 AION MATRIX LITE ONLINE\n\n"
-        "Напиши любой вопрос."
+        "Напиши любой вопрос.\n\n"
+        "Команды:\n"
+        "/status — проверить мозги\n"
+        "/search запрос — поиск в интернете"
     )
+
+
+@dp.message(Command("status"))
+async def status(message: types.Message):
+    await message.answer(
+        "🧠 AION STATUS\n\n"
+        f"Groq: {'✅' if GROQ_API_KEY else '❌'}\n"
+        f"Gemini: {'✅' if GEMINI_API_KEY else '❌'}\n"
+        f"OpenRouter: {'✅' if OPENROUTER_API_KEY else '❌'}\n"
+        f"Cerebras: {'✅' if CEREBRAS_API_KEY else '❌'}\n"
+        f"Tavily Search: {'✅' if TAVILY_API_KEY else '❌'}"
+    )
+
+
+@dp.message(Command("search"))
+async def search_command(message: types.Message):
+    query = message.text.replace("/search", "", 1).strip()
+
+    if not query:
+        await message.answer("Напиши запрос после /search")
+        return
+
+    if not TAVILY_API_KEY:
+        await message.answer("⚠️ Tavily API key не подключен.")
+        return
+
+    thinking = await message.answer("🌐 Ищу в интернете...")
+
+    try:
+        result = await ask_tavily(query)
+        await thinking.delete()
+        await message.answer(result[:4000])
+    except Exception as e:
+        await thinking.delete()
+        await message.answer(f"⚠️ Ошибка поиска:\n{e}")
 
 
 @dp.message()
@@ -237,14 +268,8 @@ async def ai_chat(message: types.Message):
         if not answer:
             answer = "⚠️ Пустой ответ от AI."
 
-        answer = answer[:4000]
-
-        try:
-            await thinking.delete()
-        except Exception:
-            pass
-
-        await message.answer(answer)
+        await thinking.delete()
+        await message.answer(answer[:4000])
 
     except Exception as e:
         try:
