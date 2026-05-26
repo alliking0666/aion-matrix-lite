@@ -18,6 +18,7 @@ GEMINI_API_KEY = clean_env("GEMINI_API_KEY")
 OPENROUTER_API_KEY = clean_env("OPENROUTER_API_KEY")
 CEREBRAS_API_KEY = clean_env("CEREBRAS_API_KEY")
 TAVILY_API_KEY = clean_env("TAVILY_API_KEY")
+GITHUB_TOKEN = clean_env("GITHUB_TOKEN")
 
 PORT = int(os.getenv("PORT", "10000"))
 
@@ -32,9 +33,13 @@ SYSTEM_PROMPT = (
     "Ты НЕ Meta AI, НЕ ChatGPT, НЕ OpenAI, НЕ Google и НЕ Gemini.\n"
     "Никогда не выдумывай компании, университеты, профессоров или фальшивую историю создания.\n\n"
     "Ты работаешь через AI-мозги: Groq, Gemini, OpenRouter, Cerebras.\n"
-    "Для интернет-поиска используешь Tavily.\n\n"
+    "Для интернет-поиска используешь Tavily.\n"
+    "Для поиска репозиториев используешь GitHub API.\n\n"
     "Ты умеешь помогать с программированием, Telegram-ботами, GitHub, Render, API, сайтами, приложениями, играми, "
     "Windows, Linux, macOS, Android, iPhone, переводами, текстами, идеями, обучением и анализом ошибок.\n\n"
+    "Если ты не знаешь точных деталей — говори честно: 'Точных деталей у меня нет.' "
+    "Не используй фразы 'могу предположить', 'вероятно', 'скорее всего' о своей истории создания.\n\n"
+    "Если пользователь спрашивает кто ты — отвечай кратко, уверенно и без лишней воды.\n"
     "Отвечай уверенно, понятно, полезно и на языке пользователя."
 )
 
@@ -123,8 +128,6 @@ async def ask_cerebras(text: str) -> str:
 
 
 async def ask_tavily(query: str) -> str:
-    url = "https://api.tavily.com/search"
-
     payload = {
         "api_key": TAVILY_API_KEY,
         "query": query,
@@ -134,7 +137,7 @@ async def ask_tavily(query: str) -> str:
     }
 
     async with ClientSession() as session:
-        async with session.post(url, json=payload, timeout=30) as response:
+        async with session.post("https://api.tavily.com/search", json=payload, timeout=30) as response:
             data = await safe_json_response(response)
 
             if response.status != 200:
@@ -161,12 +164,57 @@ async def ask_tavily(query: str) -> str:
             return text[:6000] if text else "Ничего не найдено."
 
 
+async def ask_github(query: str) -> str:
+    url = "https://api.github.com/search/repositories"
+
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+    }
+
+    params = {
+        "q": query,
+        "sort": "stars",
+        "order": "desc",
+        "per_page": 5,
+    }
+
+    async with ClientSession() as session:
+        async with session.get(url, headers=headers, params=params, timeout=30) as response:
+            data = await safe_json_response(response)
+
+            if response.status != 200:
+                raise RuntimeError(str(data))
+
+            items = data.get("items", [])
+
+            if not items:
+                return "GitHub ничего не нашёл."
+
+            text = "🔥 GitHub репозитории:\n\n"
+
+            for repo in items:
+                name = repo.get("full_name", "")
+                stars = repo.get("stargazers_count", 0)
+                repo_url = repo.get("html_url", "")
+                description = repo.get("description", "")
+
+                text += (
+                    f"📦 {name}\n"
+                    f"⭐ {stars}\n"
+                    f"{description}\n"
+                    f"{repo_url}\n\n"
+                )
+
+            return text[:4000]
+
+
 def needs_search(text: str) -> bool:
     lower = text.lower()
 
     search_words = [
         "найди", "поиск", "новости", "свежие", "актуально",
-        "github", "документация", "documentation", "stack overflow",
+        "документация", "documentation", "stack overflow",
         "что такое", "цена", "курс", "latest", "search", "find",
         "news", "current", "today", "сегодня", "2026",
     ]
@@ -174,8 +222,30 @@ def needs_search(text: str) -> bool:
     return any(word in lower for word in search_words)
 
 
+def needs_github(text: str) -> bool:
+    lower = text.lower()
+
+    github_words = [
+        "github",
+        "repo",
+        "repository",
+        "репозиторий",
+        "репозитории",
+        "найди репозиторий",
+        "найди github",
+    ]
+
+    return any(word in lower for word in github_words)
+
+
 async def ask_aion(text: str) -> str:
     errors = []
+
+    if GITHUB_TOKEN and needs_github(text):
+        try:
+            return await ask_github(text)
+        except Exception as e:
+            errors.append(f"GitHub: {e}")
 
     if TAVILY_API_KEY and needs_search(text):
         try:
@@ -215,7 +285,8 @@ async def start(message: types.Message):
         "Напиши любой вопрос.\n\n"
         "Команды:\n"
         "/status — проверить мозги\n"
-        "/search запрос — поиск в интернете"
+        "/search запрос — поиск в интернете\n"
+        "/github запрос — поиск репозиториев"
     )
 
 
@@ -227,7 +298,8 @@ async def status(message: types.Message):
         f"Gemini: {'✅' if GEMINI_API_KEY else '❌'}\n"
         f"OpenRouter: {'✅' if OPENROUTER_API_KEY else '❌'}\n"
         f"Cerebras: {'✅' if CEREBRAS_API_KEY else '❌'}\n"
-        f"Tavily Search: {'✅' if TAVILY_API_KEY else '❌'}"
+        f"Tavily Search: {'✅' if TAVILY_API_KEY else '❌'}\n"
+        f"GitHub API: {'✅' if GITHUB_TOKEN else '❌'}"
     )
 
 
@@ -250,8 +322,37 @@ async def search_command(message: types.Message):
         await thinking.delete()
         await message.answer(result[:4000])
     except Exception as e:
-        await thinking.delete()
+        try:
+            await thinking.delete()
+        except Exception:
+            pass
         await message.answer(f"⚠️ Ошибка поиска:\n{e}")
+
+
+@dp.message(Command("github"))
+async def github_command(message: types.Message):
+    query = message.text.replace("/github", "", 1).strip()
+
+    if not query:
+        await message.answer("Напиши запрос после /github")
+        return
+
+    if not GITHUB_TOKEN:
+        await message.answer("⚠️ GitHub token не подключен.")
+        return
+
+    thinking = await message.answer("💻 Ищу на GitHub...")
+
+    try:
+        result = await ask_github(query)
+        await thinking.delete()
+        await message.answer(result[:4000])
+    except Exception as e:
+        try:
+            await thinking.delete()
+        except Exception:
+            pass
+        await message.answer(f"⚠️ Ошибка GitHub:\n{e}")
 
 
 @dp.message()
