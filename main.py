@@ -1,11 +1,10 @@
 import os
 import asyncio
-from aiohttp import web
+from aiohttp import web, ClientSession
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 
-from openai import OpenAI
 import google.generativeai as genai
 
 
@@ -22,8 +21,37 @@ SYSTEM_PROMPT = (
 )
 
 
+async def ask_groq(text: str) -> str:
+    url = "https://api.groq.com/openai/v1/chat/completions"
+
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": text}
+        ],
+        "temperature": 0.7,
+        "max_tokens": 800
+    }
+
+    async with ClientSession() as session:
+        async with session.post(url, headers=headers, json=payload) as response:
+            data = await response.json()
+
+            if response.status != 200:
+                raise Exception(str(data))
+
+            return data["choices"][0]["message"]["content"]
+
+
 async def ask_gemini(text: str) -> str:
     genai.configure(api_key=GEMINI_API_KEY)
+
     model = genai.GenerativeModel("gemini-2.0-flash")
 
     response = model.generate_content(
@@ -31,23 +59,6 @@ async def ask_gemini(text: str) -> str:
     )
 
     return response.text or "Gemini не вернул текстовый ответ."
-
-
-async def ask_groq(text: str) -> str:
-    client = OpenAI(
-        api_key=GROQ_API_KEY,
-        base_url="https://api.groq.com/openai/v1"
-    )
-
-    response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": text}
-        ]
-    )
-
-    return response.choices[0].message.content
 
 
 async def ask_aion(text: str) -> str:
@@ -72,7 +83,6 @@ async def ask_aion(text: str) -> str:
 async def start(message: types.Message):
     await message.answer(
         "🚀 AION MATRIX LITE ONLINE\n\n"
-        "🧠 Groq + Gemini подключены.\n"
         "Напиши любой вопрос."
     )
 
@@ -120,7 +130,7 @@ async def start_web_server():
 
 async def main():
     if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN is missing in Render Environment Variables")
+        raise RuntimeError("BOT_TOKEN is missing")
 
     if not GROQ_API_KEY and not GEMINI_API_KEY:
         raise RuntimeError("GROQ_API_KEY or GEMINI_API_KEY is missing")
