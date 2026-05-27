@@ -166,7 +166,7 @@ async def send_split_message(message, text, parse_mode=None):
     if buffer.strip():
         await message.answer(buffer, parse_mode=parse_mode)
 
-# --- 3. ИСПРАВЛЕНИЕ: ПОЛНЫЙ 4-УРОВНЕВЫЙ ИИ КАСКАД С УЧАСТИЕМ OLLAMA ---
+# --- ПОЛНЫЙ 4-УРОВНЕВЫЙ ИИ КАСКАД С УЧАСТИЕМ OLLAMA ---
 async def run_ai_pipeline(text, history):
     if not http_session:
         return "❌ Системный сетевой шлюз не готов."
@@ -195,7 +195,7 @@ async def run_ai_pipeline(text, history):
                     return (await resp.json())["choices"][0]["message"]["content"]
         except Exception as e: logger.warning(f"Каскад: Cerebras недоступен ({e})")
 
-    # УРОВЕНЬ 3: OpenRouterбесплатный пул
+    # УРОВЕНЬ 3: OpenRouter бесплатный пул
     if OPENROUTER_API_KEY:
         try:
             headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
@@ -232,7 +232,6 @@ async def generate_music_huggingface(prompt: str) -> bytes:
         if resp.status == 200: return await resp.read()
         raise Exception(f"HF Error Status: {resp.status}")
 
-# 5. КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Безопасный парсинг JSON ответов от Fal.ai
 async def generate_video_fal(prompt: str) -> str:
     if not FAL_API_KEY:
         raise Exception("Отсутствует FAL_API_KEY.")
@@ -252,7 +251,6 @@ async def generate_video_fal(prompt: str) -> str:
             if check_resp.status == 200:
                 data = await check_resp.json()
                 if data.get("status", "").upper() == "COMPLETED":
-                    # Безопасное извлечение без угрозы KeyError
                     video_node = data.get("video") or {}
                     final_url = video_node.get("url")
                     if final_url: return final_url
@@ -261,7 +259,6 @@ async def generate_video_fal(prompt: str) -> str:
 
 # --- КОМАНДЫ ТЕЛЕГРАМ БОТА ---
 
-# 4. КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Валидация http_session добавлена во все хэндлеры
 async def is_session_dead(message: types.Message) -> bool:
     if not http_session:
         await message.answer("❌ Внутренняя HTTP-сессия ядра не готова или была закрыта.")
@@ -273,7 +270,6 @@ async def cmd_start(message: types.Message):
     save_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     await message.answer(STRINGS["ru"]["welcome"], parse_mode="HTML")
 
-# 3. ИСПРАВЛЕНИЕ: ДИАГНОСТИЧЕСКАЯ КОМАНДА /status ДЛЯ АУДИТА ВСЕХ ENV
 @dp.message(Command("status"))
 async def cmd_status(message: types.Message):
     def check(val): return "🟢 LOADED" if val else "🔴 MISSING"
@@ -353,7 +349,6 @@ async def cmd_search(message: types.Message):
                 for r in data.get("results", []):
                     out += f"🔹 <b>{html.escape(r.get('title', ''))}</b>\n{html.escape(r.get('content', ''))}\n🔗 {html.escape(r.get('url', ''))}\n\n"
                 await status_msg.delete()
-                # 4. ИСПРАВЛЕНИЕ: Безопасная отправка через обновленный send_split_message
                 await send_split_message(message, out, parse_mode="HTML")
             else: await status_msg.edit_text(f"❌ Ошибка API поиска: {resp.status}")
     except Exception as e: await status_msg.edit_text(f"❌ Сбой поиска: {e}")
@@ -372,7 +367,6 @@ async def cmd_ollama(message: types.Message):
             if resp.status == 200:
                 res = await resp.json()
                 await status.delete()
-                # ИСПРАВЛЕНО: Добавлено экранирование контента и parse_mode="HTML"
                 await send_split_message(message, f"🦙 <b>Ollama Output:</b>\n\n{html.escape(res.get('response', ''))}", parse_mode="HTML")
             else: await status.edit_text(f"❌ Ошибка ноды Ollama: {resp.status}")
     except Exception as e: await status.edit_text(f"❌ Сбой связи: {e}")
@@ -440,9 +434,17 @@ async def cmd_cloudflare(message: types.Message):
             else: await status.edit_text(f"❌ Cloudflare Error: {resp.status}")
     except Exception as e: await status.edit_text(f"❌ Сбой Cloudflare API: {e}")
 
+# --- ИСПРАВЛЕННЫЙ ОБЩИЙ ХЭНДЛЕР ---
 @dp.message()
 async def chat_processor(message: types.Message):
-    if not message.text: return await message.answer(get_text(message.from_user.id, "only_text"))
+    if not message.text: 
+        return await message.answer(get_text(message.from_user.id, "only_text"))
+        
+    # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Если сообщение начинается со знака '/', игнорируем его тут,
+    # позволяя aiogram передать управление специализированным командам выше.
+    if message.text.startswith("/"):
+        return
+
     save_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     
     status_msg = await message.answer(get_text(message.from_user.id, "thinking"))
@@ -454,7 +456,6 @@ async def chat_processor(message: types.Message):
     save_chat_memory(message.from_user.id, "assistant", response_text)
     
     await status_msg.delete()
-    # Безопасный вывод ответа любой длины
     await send_split_message(message, response_text)
 
 # --- HEALTHCHECK SERVER ---
