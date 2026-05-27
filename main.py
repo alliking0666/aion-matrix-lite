@@ -1,15 +1,11 @@
 import os
 import sys
-import re
 import time
-import json
-import base64
 import sqlite3
 import asyncio
 import aiohttp
 import logging
 from aiohttp import web
-import google.generativeai as genai
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -21,32 +17,26 @@ logger = logging.getLogger("AION_MATRIX")
 
 # Переменные окружения (API Ключи и Конфигурация)
 BOT_TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
-GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY") or "").strip()
 GROQ_API_KEY = (os.getenv("GROQ_API_KEY") or "").strip()
 OPENROUTER_API_KEY = (os.getenv("OPENROUTER_API_KEY") or "").strip()
 CEREBRAS_API_KEY = (os.getenv("CEREBRAS_API_KEY") or "").strip()
 TAVILY_API_KEY = (os.getenv("TAVILY_API_KEY") or "").strip()
 GITHUB_TOKEN = (os.getenv("GITHUB_TOKEN") or "").strip()
 RENDER_API_KEY = (os.getenv("RENDER_API_KEY") or "").strip()
-HUGGINGFACE_API_KEY = (os.getenv("HUGGINGFACE_API_KEY") or "").strip()
 CLOUDFLARE_ACCOUNT_ID = (os.getenv("CLOUDFLARE_ACCOUNT_ID") or "").strip()
 CLOUDFLARE_API_TOKEN = (os.getenv("CLOUDFLARE_API_TOKEN") or "").strip()
 OLLAMA_BASE_URL = (os.getenv("OLLAMA_BASE_URL") or "").strip()
 PORT = int(os.getenv("PORT", 10000))
 
-# Инициализация Google Gemini SDK
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-
-# Объекты бота будут инициализированы безопасно внутри main()
+# Глобальные объекты Telegram Bot API
 bot = None
 dp = Dispatcher()
 
 DB_FILE = "matrix_memory.db"
 
-# --- РАБОТА С БАЗОЙ ДАННЫХ SQLite ---
+# --- РАБОТА С БАЗОЙ ДАННЫХ SQLite (Многопоточный режим) ---
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
@@ -80,7 +70,7 @@ def init_db():
     conn.close()
 
 def get_user(user_id):
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("SELECT user_id, username, first_name, display_name, gender, language FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
@@ -90,7 +80,7 @@ def get_user(user_id):
     return None
 
 def save_user(user_id, username, first_name, lang="ru"):
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("INSERT OR IGNORE INTO users (user_id, username, first_name, created_at, language) VALUES (?, ?, ?, ?, ?)", 
                    (user_id, username, first_name, int(time.time()), lang))
@@ -99,21 +89,21 @@ def save_user(user_id, username, first_name, lang="ru"):
     conn.close()
 
 def update_user_lang(user_id, lang):
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("UPDATE users SET language = ? WHERE user_id = ?", (lang, user_id))
     conn.commit()
     conn.close()
 
 def update_user_name(user_id, display_name):
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("UPDATE users SET display_name = ? WHERE user_id = ?", (display_name, user_id))
     conn.commit()
     conn.close()
 
 def save_chat_memory(user_id, role, content):
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("INSERT INTO memory (user_id, role, content, created_at) VALUES (?, ?, ?, ?)", 
                    (user_id, role, content, int(time.time())))
@@ -121,7 +111,7 @@ def save_chat_memory(user_id, role, content):
     conn.close()
 
 def get_chat_memory(user_id, limit=10):
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("SELECT role, content FROM memory WHERE user_id = ? ORDER BY id DESC LIMIT ?", (user_id, limit))
     rows = cursor.fetchall()
@@ -132,14 +122,14 @@ def get_chat_memory(user_id, limit=10):
     return result
 
 def clear_chat_memory(user_id):
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("DELETE FROM memory WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()
 
 def save_long_fact(user_id, fact):
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("INSERT INTO long_memory (user_id, fact, created_at) VALUES (?, ?, ?)", 
                    (user_id, fact, int(time.time())))
@@ -147,7 +137,7 @@ def save_long_fact(user_id, fact):
     conn.close()
 
 def get_long_memory(user_id):
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("SELECT fact FROM long_memory WHERE user_id = ? ORDER BY id DESC", (user_id,))
     rows = cursor.fetchall()
@@ -155,7 +145,7 @@ def get_long_memory(user_id):
     return [r[0] for r in rows]
 
 def clear_all_memory(user_id):
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("DELETE FROM memory WHERE user_id = ?", (user_id,))
     cursor.execute("DELETE FROM long_memory WHERE user_id = ?", (user_id,))
@@ -163,10 +153,10 @@ def clear_all_memory(user_id):
     conn.commit()
     conn.close()
 
-# --- СИСТЕМНЫЙ ПРОМПТ (ОРКЕСТРАТОР С ПРАВИЛАМИ РЕАЛЬНОСТИ) ---
+# --- СИСТЕМНЫЙ ПРОМПТ (ОРКЕСТРАТОР С СИНХРОНИЗАЦИЕЙ РЕАЛЬНОСТИ) ---
 SYSTEM_PROMPT = """You are AION MATRIX — a multilingual AI orchestration system.
 Core identity:
-You are not a single model. You are an AI coordinator that can work through multiple AI providers, tools, APIs, databases, search systems, vision models, language models, and future modules connected by the developer.
+You are not a single model. You are an AI coordinator that can work through multiple AI providers, tools, APIs, databases, search systems, language models, and future modules connected by the developer.
 Mission:
 Help users with accurate, useful, safe, and practical answers.
 Choose the best available AI/tool for each task.
@@ -180,8 +170,8 @@ Reality and capability rules:
   3. future planned modules
   4. theoretical capabilities
 - Never claim a module is active unless it is actually connected and working.
-- If image generation APIs are not connected:
-  say: "Image generation module is not currently active."
+- If image generation or vision APIs are not connected:
+  say: "Image and vision modules are not currently active."
 - If speech-to-text is not implemented:
   say: "Voice transcription module is planned but not yet enabled."
 - If a provider fails:
@@ -204,12 +194,12 @@ Translation rules:
 - Detect the user's language automatically.
 - Reply in the user's selected language unless asked otherwise.
 - For ancient/dead languages, provide transliteration, literal meaning, and natural translation when possible. Mark uncertain translations clearly.
-AI orchestration rules:
-- Use available providers such as Groq, Gemini, OpenRouter, Cerebras, Cloudflare Workers AI, HuggingFace, Ollama, Tavily, GitHub API, Render API, SQLite memory, and any future connected modules.
-- If a provider fails, do not stop. Try the next available provider.
-- If external search is needed, use search tools when available.
-- If image understanding is needed, use vision fallback providers.
-- If local AI is available, use Ollama as an offline/local fallback.
+
+AI orchestration rules (TEXT ONLY REALITY):
+- The active core pipeline cascades strictly through: Groq, OpenRouter, and Cerebras.
+- Cloudflare Workers AI and Ollama nodes are currently connected only to the monitoring matrix (/status) for latency diagnostics and telemetry; they do not participate in active text generation yet.
+- If external search is needed, use search tools when available (Tavily).
+- Memory features are handled locally via SQLite.
 Memory rules:
 - Use only the current user's memory. Do not confuse different users or the creator.
 - The creator is Zolotariov Roman Romanovich. Mention the creator only when directly asked.
@@ -224,49 +214,49 @@ Calm, intelligent, respectful, direct. Like Alfred/Jarvis: precise, useful, loya
 # ТАБЛИЦА ЛОКАЛИЗАЦИИ КОРНЕВЫХ СТРОК
 STRINGS = {
     "ru": {
-        "welcome": "🚀 AION MATRIX ONLINE.\n\nЯ — координационный слой ИИ (Orchestration Layer). Могу помогать с обычными вопросами, кодом, поиском, изображениями, безопасностью, OSINT и анализом рисков. Темы darknet/dark web могу объяснять только в образовательном и защитном формате.",
+        "welcome": "🚀 AION MATRIX ONLINE.\n\nЯ — координационный слой ИИ (Orchestration Layer). Могу помогать с обычными вопросами, кодом, поиском, безопасностью, OSINT и анализом рисков. Темы darknet/dark web могу объяснять только в образовательном и защитном формате.",
         "thinking": "🧠 Вычисление...",
         "no_name": "Я пока не знаю, как вас зовут. Назовите ваше имя, и я его запомню.",
         "creator": "Мой создатель — Золотарьов Роман Романович. Проект: AION_MATRIX.",
         "creator_verify": "Я не могу подтвердить это без отдельной проверки владельца.",
         "voice_recv": "🎙️ Голосовое сообщение получено. Модуль транскрипции голоса планируется, но пока не включен.",
-        "only_text": "⚠️ Пока поддерживается только текст и изображения."
+        "only_text": "⚠️ Пока поддерживается только текстовый формат взаимодействия."
     },
     "uk": {
-        "welcome": "🚀 AION MATRIX ONLINE.\n\nЯ — координаційний шар ШІ (Orchestration Layer). Можу допомагати зі звичайними питаннями, кодом, пошуком, зображеннями, безпекою, OSINT та аналізом ризиків.",
+        "welcome": "🚀 AION MATRIX ONLINE.\n\nЯ — координаційний шар ШІ (Orchestration Layer). Можу допомагати зі звичайними питаннями, кодом, пошуком, безпекою, OSINT та аналізом ризиків.",
         "thinking": "🧠 Обчислення...",
-        "no_name": "Я поки не знаю, як вас звуть. Назвіть ваше ім'я, і я його запам'ятаю.",
+        "no_name": "Я поки не знаю, как вас звуть. Назвіть ваше ім'я, і я його запам'ятаю.",
         "creator": "Мій творець — Золотарьов Роман Романович. Проект: AION_MATRIX.",
         "creator_verify": "Я не можу підтвердити це без окремої перевірки власника.",
         "voice_recv": "🎙️ Голосове повідомлення отримано. Модуль транскрипції голосу планується, але поки не увімкнений.",
-        "only_text": "⚠️ Наразі підтримується тільки текст та зображення."
+        "only_text": "⚠️ Наразі підтримується тільки текстовий формат взаємодії."
     },
     "de": {
-        "welcome": "🚀 AION MATRIX ONLINE.\n\nIch bin der KI-Orchestrierungs-Layer (Orchestration Layer). Ich kann bei allgemeinen Fragen, Code, Suche, Bildern, Sicherheit, OSINT und Risikoanalysen helfen.",
+        "welcome": "🚀 AION MATRIX ONLINE.\n\nIch bin der KI-Orchestrierungs-Layer (Orchestration Layer). Ich kann bei allgemeinen Fragen, Code, Suche, Sicherheit, OSINT und Risikoanalysen helfen.",
         "thinking": "🧠 Berechne...",
         "no_name": "Ich weiß noch nicht, wie Sie heißen. Sagen Sie mir Ihren Namen, und ich werde ihn mir merken.",
         "creator": "Mein Schöpfer ist Zolotariov Roman Romanovich. Projekt: AION_MATRIX.",
         "creator_verify": "Ich kann dies ohne eine separate Überprüfung des Eigentümers nicht bestätigen.",
         "voice_recv": "🎙️ Sprachnachricht empfangen. Das Sprach-Transkriptionsmodul ist geplant, aber noch nicht aktiviert.",
-        "only_text": "⚠️ Derzeit werden nur Text und Bilder unterstützt."
+        "only_text": "⚠️ Derzeit wird nur Textinteraktion unterstützt."
     },
     "en": {
-        "welcome": "🚀 AION MATRIX ONLINE.\n\nI am the AI Orchestration Layer. I can assist with general questions, coding, search, images, security, OSINT, and risk analysis.",
+        "welcome": "🚀 AION MATRIX ONLINE.\n\nI am the AI Orchestration Layer. I can assist with general questions, coding, search, security, OSINT, and risk analysis.",
         "thinking": "🧠 Thinking...",
         "no_name": "I do not know your name yet. Tell me your name, and I will remember it.",
         "creator": "My creator is Zolotariov Roman Romanovich. Project: AION_MATRIX.",
         "creator_verify": "I cannot confirm this without a separate owner verification.",
         "voice_recv": "🎙️ Voice message received. Voice transcription module is planned but not yet enabled.",
-        "only_text": "⚠️ Currently, only text and images are supported."
+        "only_text": "⚠️ Currently, only text interaction is supported."
     },
     "pl": {
-        "welcome": "🚀 AION MATRIX ONLINE.\n\nJestem warstwą orkiestracji AI (Orchestration Layer). Mogę pomagać w ogólnych pytaniach, kodowaniu, wyszukiwaniu, obrazach, bezpieczeństwie, OSINT i analizie ryzyka.",
+        "welcome": "🚀 AION MATRIX ONLINE.\n\nJestem warstwą orkiestracji AI (Orchestration Layer). Mogę pomagać w ogólnych pytaniach, kodowaniu, wyszukiwaniu, bezpieczeństwie, OSINT i analizie ryzyka.",
         "thinking": "🧠 Myślenie...",
         "no_name": "Nie wiem jeszcze, jak się nazywasz. Powiedz mi swoje imię, a je zapamiętam.",
         "creator": "Moim twórcą jest Zolotariov Roman Romanovich. Projekt: AION_MATRIX.",
         "creator_verify": "Nie mogę tego potwierdzić bez oddzielnej weryfikacji właściciela.",
         "voice_recv": "🎙️ Wiadomość głosowa odebrana. Moduł transkrypcji głosu jest planowany, ale nie został jeszcze włączony.",
-        "only_text": "⚠️ Obecnie obsługiwane są tylko teksty i obrazy."
+        "only_text": "⚠️ Obecnie obsługiwane są tylko interakcje tekstowe."
     }
 }
 
@@ -336,21 +326,6 @@ async def ask_cerebras(text, history):
                 return data["choices"][0]["message"]["content"]
             raise Exception(f"Status {resp.status}")
 
-async def ask_gemini(text, history):
-    if not GEMINI_API_KEY or not genai:
-        raise Exception("Disabled")
-    full_prompt = f"{SYSTEM_PROMPT}\n\n"
-    for h in history:
-        full_prompt += f"{h['role']}: {h['content']}\n"
-    full_prompt += f"user: {text}"
-    
-    loop = asyncio.get_running_loop()
-    def call():
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        res = model.generate_content(full_prompt)
-        return res.text
-    return await loop.run_in_executor(None, call)
-
 async def run_ai_pipeline(text, history):
     errors = []
     try:
@@ -365,10 +340,6 @@ async def run_ai_pipeline(text, history):
         return await ask_cerebras(text, history)
     except Exception as e:
         errors.append(f"Cerebras -> {e}")
-    try:
-        return await ask_gemini(text, history)
-    except Exception as e:
-        errors.append(f"Gemini -> {e}")
         
     return "⚠️ Все нейросетевые конвейеры маршрутизации вернули ошибку или перегружены:\n" + "\n".join(errors)
 
@@ -470,85 +441,6 @@ def parse_and_store_profile(user_id, text):
         fact_text = " ".join(parts[3:])
         save_long_fact(user_id, fact_text)
 
-# --- МОДУЛЬ КОМПЛЕКСНОГО АНАЛИЗА ИЗОБРАЖЕНИЙ (VISION FALLBACK) ---
-
-async def run_vision_fallback(base64_img, prompt):
-    # 1. OpenRouter Vision (Qwen VL)
-    if OPENROUTER_API_KEY:
-        try:
-            async with aiohttp.ClientSession() as session:
-                payload = {
-                    "model": "qwen/qwen2.5-vl-72b-instruct:free",
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": f"{SYSTEM_PROMPT}\n\nЗапрос к изображению: {prompt}"},
-                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_img}"}}
-                            ]
-                        }
-                    ]
-                }
-                headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
-                async with session.post("https://openrouter.ai/api/v1/chat/completions", json=payload, headers=headers, timeout=25) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        return data["choices"][0]["message"]["content"]
-                    logger.error(f"OpenRouter Vision status error: {resp.status}")
-        except Exception as e:
-            logger.error(f"Vision Fallback 1 (OpenRouter) failed: {e}")
-
-    # 2. Gemini Vision (Native SDK Улучшенный пэйлоад)
-    if GEMINI_API_KEY and genai:
-        try:
-            loop = asyncio.get_running_loop()
-            def call_gemini_vision():
-                model = genai.GenerativeModel("gemini-2.0-flash")
-                raw_bytes = base64.b64decode(base64_img)
-                return model.generate_content([
-                    f"{SYSTEM_PROMPT}\n\nЗапрос к изображению: {prompt}",
-                    {"mime_type": "image/jpeg", "data": raw_bytes}
-                ]).text
-            return await loop.run_in_executor(None, call_gemini_vision)
-        except Exception as e:
-            logger.error(f"Vision Fallback 2 (Gemini) failed: {e}")
-
-    # 3. Cloudflare Workers AI Vision (Передача в чистом формате base64)
-    if CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN:
-        try:
-            async with aiohttp.ClientSession() as session:
-                url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/meta/llama-3.2-11b-vision-instruct"
-                headers = {"Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}", "Content-Type": "application/json"}
-                payload = {
-                    "prompt": f"{SYSTEM_PROMPT}\n\nAnalyze this image according to: {prompt}",
-                    "image": base64_img
-                }
-                async with session.post(url, json=payload, headers=headers, timeout=25) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        if data.get("success"):
-                            return data.get("result", {}).get("response", "No response in Cloudflare result.")
-                    logger.error(f"Cloudflare Vision status error: {resp.status}")
-        except Exception as e:
-            logger.error(f"Vision Fallback 3 (Cloudflare) failed: {e}")
-
-    # 4. HuggingFace Vision Inference (BLIP)
-    if HUGGINGFACE_API_KEY:
-        try:
-            async with aiohttp.ClientSession() as session:
-                url = "https://api-inference.huggingface.co/models/Salesforce/blip-image-captioning-large"
-                headers = {"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"}
-                raw_bytes = base64.b64decode(base64_img)
-                async with session.post(url, data=raw_bytes, headers=headers, timeout=20) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        if isinstance(data, list) and len(data) > 0:
-                            return f"[HF BLIP Auto-Caption]: {data[0].get('generated_text')} \n\n*Заметка: Модель сгенерировала техническое описание, детальный контекстный анализ по текстовому запросу временно недоступен.*"
-        except Exception as e:
-            logger.error(f"Vision Fallback 4 (HuggingFace) failed: {e}")
-
-    return "⚠️ Все доступные модули мультимодального анализа изображений (Vision Fallback) вернули ошибку, таймаут или не сконфигурированы."
-
 # --- ОБРАБОТЧИКИ СОБЫТИЙ И ТЕКСТОВЫЙ ПРОЦЕССИНГ ---
 
 async def send_split_message(message, text):
@@ -575,7 +467,6 @@ async def callback_set_lang(callback: CallbackQuery):
     await callback.message.answer(STRINGS[lang]["welcome"])
     await callback.answer()
 
-# Хелпер-функция chk для статус-бара (Объявлена ДО вызова в хэндлере команды status)
 def chk(env):
     return "✅ CONFIG_LOADED" if env else "❌ DISABLED"
 
@@ -589,21 +480,18 @@ async def cmd_status(message: types.Message):
             return "❌ DISABLED"
         return h.get(key, "✅ ACTIVE (No ping schema)")
         
-    out = "📊 МОНИТОРИНГ СИСТЕМНЫХ МАТРИЦ И МОДУЛЕЙ AION:\n\n"
+    out = "📊 МОНИТОРИНГ СИСТЕМНЫХ МАТРИЦ И МОДУЛЕЙ AION (TEXT ONLY):\n\n"
     out += "🌍 Universal Language Layer: ✅ ACTIVE / expandable\n"
     out += "🧬 AI Orchestration Core: ✅ Multi-provider / future-ready\n\n"
     out += f"🤖 Groq Core Pipeline: {display_state('groq', GROQ_API_KEY)}\n"
-    out += f"🧠 Gemini API Node: {chk(GEMINI_API_KEY)}\n"  # Правка 1: Ювелирно чистый вывод статуса Gemini
     out += f"🌐 OpenRouter Central Node: {display_state('openrouter', OPENROUTER_API_KEY)}\n"
     out += f"⚡ Cerebras Ultra-Latency: {display_state('cerebras', CEREBRAS_API_KEY)}\n"
     out += f"🔍 Tavily Search Intelligence: {display_state('tavily', TAVILY_API_KEY)}\n"
     out += f"📂 GitHub API Repository Agent: {chk(GITHUB_TOKEN)}\n"
     out += f"🛠️ Render DevOps Controller: {chk(RENDER_API_KEY)}\n"
     out += f"☁️ Cloudflare Workers Edge AI: {display_state('cloudflare', CLOUDFLARE_API_TOKEN)}\n"
-    out += f"👁️ HuggingFace Vision Pipeline: {chk(HUGGINGFACE_API_KEY)}\n"
     out += f"🏠 Ollama Local Node Endpoint: {chk(OLLAMA_BASE_URL)}\n"
     out += "🗄️ SQLite Database Memory State: ✅ СТАТИЧЕН\n"
-    out += "📡 Cascade Vision Fallback Matrix: ✅ АКТИВНА\n"
     
     await status_msg.delete()
     await message.answer(out)
@@ -628,7 +516,6 @@ async def cmd_search(message: types.Message):
                     results = data.get("results", [])
                     out = f"🔍 Результаты веб-поиска по запросу: {query}\n\n"
                     for r in results:
-                        # Правка 2: Безопасный сбор контента без риска падения на None
                         out += f"🔹 {r.get('title')}\n{r.get('content', '')}\n🔗 {r.get('url')}\n\n"
                     await status_msg.delete()
                     await send_split_message(message, out)
@@ -662,42 +549,22 @@ async def cmd_clearall(message: types.Message):
     clear_all_memory(message.from_user.id)
     await message.answer("💥 Полный сброс параметров памяти и профиля пользователя успешно завершен.")
 
-@dp.message(lambda msg: msg.photo is not None)
-async def handle_photo(message: types.Message):
-    save_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
-    status_msg = await message.answer(get_text(message.from_user.id, "thinking"))
-    try:
-        photo = message.photo[-1]
-        file_info = await bot.get_file(photo.file_id)
-        async with aiohttp.ClientSession() as session:
-            url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
-            async with session.get(url) as resp:
-                if resp.status == 200:
-                    img_bytes = await resp.read()
-                    base64_encoded = base64.b64encode(img_bytes).decode("utf-8")
-                    prompt = message.caption if message.caption else "Analyze this image thoroughly."
-                    answer = await run_vision_fallback(base64_encoded, prompt)
-                    await status_msg.delete()
-                    await send_split_message(message, answer)
-                else:
-                    await status_msg.edit_text(f"❌ Ошибка загрузки медиафайла: статус {resp.status}")
-    except Exception as e:
-        await status_msg.edit_text(f"❌ Исключение при обработке мультимедиа Vision: {e}")
-
 @dp.message(lambda msg: msg.voice is not None)
 async def handle_voice(message: types.Message):
     await message.answer(get_text(message.from_user.id, "voice_recv"))
 
 @dp.message()
 async def chat_processor(message: types.Message):
+    user_id = message.from_user.id
+    
     if not message.text:
-        await message.answer(get_text(message.from_user.id, "only_text"))
+        save_user(user_id, message.from_user.username, message.from_user.first_name)
+        await message.answer(get_text(user_id, "only_text"))
         return
 
-    user_id = message.from_user.id
     save_user(user_id, message.from_user.username, message.from_user.first_name)
-    
     text_lower = message.text.lower()
+    
     if any(q in text_lower for q in ["кто твой создатель", "кто тебя создал", "чей это проект", "кто создатель"]):
         await message.answer(get_text(user_id, "creator"))
         return
@@ -727,7 +594,7 @@ async def chat_processor(message: types.Message):
 async def handle_web_root(request):
     html = """<!DOCTYPE html>
 <html><head><title>AION MATRIX NET</title><style>body { background-color: #0b0c10; color: #45f3ff; font-family: sans-serif; text-align: center; padding-top: 80px; }</style></head>
-<body><h1>🌌 AION MATRIX CORE</h1><p>Adaptive Neural Network Interface Engine is Active.</p></body></html>"""
+<body><h1>🌌 AION MATRIX CORE</h1><p>Adaptive Text Orchestration Engine is Active.</p></body></html>"""
     return web.Response(text=html, content_type="text/html")
 
 async def start_web_server():
@@ -744,12 +611,14 @@ async def main():
         logger.error("Критическая ошибка: BOT_TOKEN отсутствует в переменных окружения.")
         sys.exit(1)
         
-    # Правка 3: Инициализируем объект Bot строго внутри рантайма после валидации токена
     bot = Bot(token=BOT_TOKEN)
-    
     init_db()
     await start_web_server()
-    await dp.start_polling(bot)
+    
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await bot.session.close()  # Гарантированное закрытие сессии при SIGTERM/Shutdown
 
 if __name__ == "__main__":
     asyncio.run(main())
