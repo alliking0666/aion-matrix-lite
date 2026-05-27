@@ -60,9 +60,7 @@ TAVILY_API_KEY = clean_env(
     "TAVILY_API_KEY"
 )
 
-GITHUB_TOKEN = clean_env(
-    "GITHUB_TOKEN"
-)
+GITHUB_TOKEN = clean_env("GITHUB_TOKEN")
 
 RENDER_API_KEY = clean_env(
     "RENDER_API_KEY"
