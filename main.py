@@ -1,76 +1,78 @@
 import os
 import sys
 import time
+import html
 import sqlite3
 import asyncio
 import aiohttp
 import logging
 from aiohttp import web
+from urllib.parse import quote
 
+# 1. КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Добавлен types в импорт aiogram
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import BufferedInputFile
 
-# Настройка логирования (Production Ready)
+# Настройка логирования
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("AION_MATRIX")
 
-# Переменные окружения (API Ключи и Конфигурация)
+# --- ПОЛНАЯ МАТРИЦА ИНФРАСТРУКТУРЫ (12 ENV + PORT) ---
 BOT_TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
+PORT = int(os.getenv("PORT", 10000))
+
+# Текстовая ИИ-матрица
 GROQ_API_KEY = (os.getenv("GROQ_API_KEY") or "").strip()
-OPENROUTER_API_KEY = (os.getenv("OPENROUTER_API_KEY") or "").strip()
 CEREBRAS_API_KEY = (os.getenv("CEREBRAS_API_KEY") or "").strip()
+OPENROUTER_API_KEY = (os.getenv("OPENROUTER_API_KEY") or "").strip()
+OLLAMA_BASE_URL = (os.getenv("OLLAMA_BASE_URL") or "").strip()
+
+# Инструменты поиска и репозиториев
 TAVILY_API_KEY = (os.getenv("TAVILY_API_KEY") or "").strip()
 GITHUB_TOKEN = (os.getenv("GITHUB_TOKEN") or "").strip()
+
+# Деплой и облачный контроль
 RENDER_API_KEY = (os.getenv("RENDER_API_KEY") or "").strip()
 CLOUDFLARE_ACCOUNT_ID = (os.getenv("CLOUDFLARE_ACCOUNT_ID") or "").strip()
 CLOUDFLARE_API_TOKEN = (os.getenv("CLOUDFLARE_API_TOKEN") or "").strip()
-OLLAMA_BASE_URL = (os.getenv("OLLAMA_BASE_URL") or "").strip()
-PORT = int(os.getenv("PORT", 10000))
 
-# Глобальные объекты Telegram Bot API
+# Мультимедиа сетка
+HUGGINGFACE_API_KEY = (os.getenv("HUGGINGFACE_API_KEY") or "").strip()
+FAL_API_KEY = (os.getenv("FAL_API_KEY") or "").strip()
+POLLINATIONS_ENABLED = (os.getenv("POLLINATIONS_ENABLED") or "true").lower() == "true"
+
+# Глобальные интерфейсы ядра
 bot = None
 dp = Dispatcher()
+http_session = None  
 
 DB_FILE = "matrix_memory.db"
+user_cooldowns = {}
+COOLDOWN_TIME = 5  # Оптимальный флуд-контроль
 
-# --- РАБОТА С БАЗОЙ ДАННЫХ SQLite (Многопоточный режим) ---
+# --- СУБД LAYER ---
 def init_db():
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=30)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            first_name TEXT,
-            display_name TEXT,
-            gender TEXT DEFAULT 'unknown',
-            language TEXT DEFAULT 'ru',
-            created_at INTEGER
+            username TEXT, first_name TEXT, display_name TEXT,
+            gender TEXT DEFAULT 'unknown', language TEXT DEFAULT 'ru', created_at INTEGER
         )
     """)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS memory (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            role TEXT,
-            content TEXT,
-            created_at INTEGER
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS long_memory (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            fact TEXT,
-            created_at INTEGER
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
+            role TEXT, content TEXT, created_at INTEGER
         )
     """)
     conn.commit()
     conn.close()
 
 def get_user(user_id):
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=30)
     cursor = conn.cursor()
     cursor.execute("SELECT user_id, username, first_name, display_name, gender, language FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
@@ -80,7 +82,7 @@ def get_user(user_id):
     return None
 
 def save_user(user_id, username, first_name, lang="ru"):
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=30)
     cursor = conn.cursor()
     cursor.execute("INSERT OR IGNORE INTO users (user_id, username, first_name, created_at, language) VALUES (?, ?, ?, ?, ?)", 
                    (user_id, username, first_name, int(time.time()), lang))
@@ -88,537 +90,398 @@ def save_user(user_id, username, first_name, lang="ru"):
     conn.commit()
     conn.close()
 
-def update_user_lang(user_id, lang):
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("UPDATE users SET language = ? WHERE user_id = ?", (lang, user_id))
-    conn.commit()
-    conn.close()
-
-def update_user_name(user_id, display_name):
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("UPDATE users SET display_name = ? WHERE user_id = ?", (display_name, user_id))
-    conn.commit()
-    conn.close()
-
 def save_chat_memory(user_id, role, content):
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=30)
     cursor = conn.cursor()
     cursor.execute("INSERT INTO memory (user_id, role, content, created_at) VALUES (?, ?, ?, ?)", 
                    (user_id, role, content, int(time.time())))
     conn.commit()
     conn.close()
 
-def get_chat_memory(user_id, limit=10):
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+def get_chat_memory(user_id, limit=6):
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=30)
     cursor = conn.cursor()
     cursor.execute("SELECT role, content FROM memory WHERE user_id = ? ORDER BY id DESC LIMIT ?", (user_id, limit))
     rows = cursor.fetchall()
     conn.close()
-    result = []
-    for r in reversed(rows):
-        result.append({"role": r[0], "content": r[1]})
-    return result
+    return [{"role": r[0], "content": r[1]} for r in reversed(rows)]
 
-def clear_chat_memory(user_id):
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM memory WHERE user_id = ?", (user_id,))
-    conn.commit()
-    conn.close()
+# --- КОНФИГУРАЦИЯ СТРОК И ИНТЕРФЕЙСА ---
+SYSTEM_PROMPT = "You are AION MATRIX — a highly advanced multimedia AI orchestration platform. Maintain full awareness of chat history to provide contextual responses."
 
-def save_long_fact(user_id, fact):
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO long_memory (user_id, fact, created_at) VALUES (?, ?, ?)", 
-                   (user_id, fact, int(time.time())))
-    conn.commit()
-    conn.close()
-
-def get_long_memory(user_id):
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("SELECT fact FROM long_memory WHERE user_id = ? ORDER BY id DESC", (user_id,))
-    rows = cursor.fetchall()
-    conn.close()
-    return [r[0] for r in rows]
-
-def clear_all_memory(user_id):
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM memory WHERE user_id = ?", (user_id,))
-    cursor.execute("DELETE FROM long_memory WHERE user_id = ?", (user_id,))
-    cursor.execute("UPDATE users SET display_name = NULL, gender = 'unknown' WHERE user_id = ?", (user_id,))
-    conn.commit()
-    conn.close()
-
-# --- СИСТЕМНЫЙ ПРОМПТ (ОРКЕСТРАТОР С СИНХРОНИЗАЦИЕЙ РЕАЛЬНОСТИ) ---
-SYSTEM_PROMPT = """You are AION MATRIX — a multilingual AI orchestration system.
-Core identity:
-You are not a single model. You are an AI coordinator that can work through multiple AI providers, tools, APIs, databases, search systems, language models, and future modules connected by the developer.
-Mission:
-Help users with accurate, useful, safe, and practical answers.
-Choose the best available AI/tool for each task.
-If one AI provider fails, continue through fallback providers.
-Never claim to literally contain every AI in existence. Instead, explain that you can connect to available AI systems through modules and APIs.
-
-Reality and capability rules:
-- Separate:
-  1. currently active modules
-  2. optional connected modules
-  3. future planned modules
-  4. theoretical capabilities
-- Never claim a module is active unless it is actually connected and working.
-- If image generation or vision APIs are not connected:
-  say: "Image and vision modules are not currently active."
-- If speech-to-text is not implemented:
-  say: "Voice transcription module is planned but not yet enabled."
-- If a provider fails:
-  explain which subsystem failed without pretending success.
-- Be transparent about uncertainty.
-- Never hallucinate integrations, APIs, databases, GPUs, or tools.
-- Distinguish between: "I can conceptually support" and "this feature is currently operational."
-- If a language is ancient, partially lost, or undeciphered:
-  provide probability-based interpretation instead of certainty.
-- If multiple AI systems are connected:
-  describe yourself as an orchestration layer, not as literally all AI models combined.
-- Avoid exaggerated omniscience claims.
-- Prioritize technical truth over roleplay.
-
-Language mission:
-You must understand, translate, compare, and explain as many human languages as possible, including modern, regional, historical, ancient, and symbolic writing systems where enough data exists.
-Important limitation:
-If a language is lost, undeciphered, or has insufficient data, be honest. Explain what is known and what is unknown.
-Translation rules:
-- Detect the user's language automatically.
-- Reply in the user's selected language unless asked otherwise.
-- For ancient/dead languages, provide transliteration, literal meaning, and natural translation when possible. Mark uncertain translations clearly.
-
-AI orchestration rules (TEXT ONLY REALITY):
-- The active core pipeline cascades strictly through: Groq, OpenRouter, and Cerebras.
-- Cloudflare Workers AI and Ollama nodes are currently connected only to the monitoring matrix (/status) for latency diagnostics and telemetry; they do not participate in active text generation yet.
-- If external search is needed, use search tools when available (Tavily).
-- Memory features are handled locally via SQLite.
-Memory rules:
-- Use only the current user's memory. Do not confuse different users or the creator.
-- The creator is Zolotariov Roman Romanovich. Mention the creator only when directly asked.
-- If the user's name is unknown, do not guess.
-Darknet / security policy:
-You may discuss darknet, dark web, Tor, privacy, cybercrime news, scams, leaks, OSINT, and security risks for educational, journalistic, defensive, and harm-prevention purposes.
-Do not provide operational criminal instructions, illegal marketplace links, malware, phishing, credential theft, unauthorized access, or evasion guidance.
-Style:
-Calm, intelligent, respectful, direct. Like Alfred/Jarvis: precise, useful, loyal to the user, but honest about limits.
-"""
-
-# ТАБЛИЦА ЛОКАЛИЗАЦИИ КОРНЕВЫХ СТРОК
 STRINGS = {
     "ru": {
-        "welcome": "🚀 AION MATRIX ONLINE.\n\nЯ — координационный слой ИИ (Orchestration Layer). Могу помогать с обычными вопросами, кодом, поиском, безопасностью, OSINT и анализом рисков. Темы darknet/dark web могу объяснять только в образовательном и защитном формате.",
+        "welcome": (
+            "🚀 <b>AION MATRIX HUB ONLINE</b>\n\n"
+            "💬 <b>Главный ИИ-Диалог:</b> обычный текст (4-уровневый каскад)\n"
+            "📊 <b>Статус системы:</b> /status\n\n"
+            "🎨 /image [промпт] — Синтез графики\n"
+            "🎼 /music [промпт] — ИИ-генерация аудио\n"
+            "🎥 /video [промпт] — Рендеринг видео\n"
+            "🔍 /search [запрос] — Безопасный веб-поиск\n\n"
+            "🦙 /ollama [запрос] — Прямой вызов локальной модели\n"
+            "🐙 /github [owner/repo] — Аналитика репозитория\n"
+            "🧬 /render — Мониторинг сервисов Render\n"
+            "☁️ /cloudflare — Проверка зон Cloudflare Edge"
+        ),
         "thinking": "🧠 Вычисление...",
-        "no_name": "Я пока не знаю, как вас зовут. Назовите ваше имя, и я его запомню.",
-        "creator": "Мой создатель — Золотарьов Роман Романович. Проект: AION_MATRIX.",
-        "creator_verify": "Я не могу подтвердить это без отдельной проверки владельца.",
-        "voice_recv": "🎙️ Голосовое сообщение получено. Модуль транскрипции голоса планируется, но пока не включен.",
-        "only_text": "⚠️ Пока поддерживается только текстовый формат взаимодействия."
-    },
-    "uk": {
-        "welcome": "🚀 AION MATRIX ONLINE.\n\nЯ — координаційний шар ШІ (Orchestration Layer). Можу допомагати зі звичайними питаннями, кодом, пошуком, безпекою, OSINT та аналізом ризиків.",
-        "thinking": "🧠 Обчислення...",
-        "no_name": "Я поки не знаю, как вас звуть. Назвіть ваше ім'я, і я його запам'ятаю.",
-        "creator": "Мій творець — Золотарьов Роман Романович. Проект: AION_MATRIX.",
-        "creator_verify": "Я не можу підтвердити це без окремої перевірки власника.",
-        "voice_recv": "🎙️ Голосове повідомлення отримано. Модуль транскрипції голосу планується, але поки не увімкнений.",
-        "only_text": "⚠️ Наразі підтримується тільки текстовий формат взаємодії."
-    },
-    "de": {
-        "welcome": "🚀 AION MATRIX ONLINE.\n\nIch bin der KI-Orchestrierungs-Layer (Orchestration Layer). Ich kann bei allgemeinen Fragen, Code, Suche, Sicherheit, OSINT und Risikoanalysen helfen.",
-        "thinking": "🧠 Berechne...",
-        "no_name": "Ich weiß noch nicht, wie Sie heißen. Sagen Sie mir Ihren Namen, und ich werde ihn mir merken.",
-        "creator": "Mein Schöpfer ist Zolotariov Roman Romanovich. Projekt: AION_MATRIX.",
-        "creator_verify": "Ich kann dies ohne eine separate Überprüfung des Eigentümers nicht bestätigen.",
-        "voice_recv": "🎙️ Sprachnachricht empfangen. Das Sprach-Transkriptionsmodul ist geplant, aber noch nicht aktiviert.",
-        "only_text": "⚠️ Derzeit wird nur Textinteraktion unterstützt."
-    },
-    "en": {
-        "welcome": "🚀 AION MATRIX ONLINE.\n\nI am the AI Orchestration Layer. I can assist with general questions, coding, search, security, OSINT, and risk analysis.",
-        "thinking": "🧠 Thinking...",
-        "no_name": "I do not know your name yet. Tell me your name, and I will remember it.",
-        "creator": "My creator is Zolotariov Roman Romanovich. Project: AION_MATRIX.",
-        "creator_verify": "I cannot confirm this without a separate owner verification.",
-        "voice_recv": "🎙️ Voice message received. Voice transcription module is planned but not yet enabled.",
-        "only_text": "⚠️ Currently, only text interaction is supported."
-    },
-    "pl": {
-        "welcome": "🚀 AION MATRIX ONLINE.\n\nJestem warstwą orkiestracji AI (Orchestration Layer). Mogę pomagać w ogólnych pytaniach, kodowaniu, wyszukiwaniu, bezpieczeństwie, OSINT i analizie ryzyka.",
-        "thinking": "🧠 Myślenie...",
-        "no_name": "Nie wiem jeszcze, jak się nazywasz. Powiedz mi swoje imię, a je zapamiętam.",
-        "creator": "Moim twórcą jest Zolotariov Roman Romanovich. Projekt: AION_MATRIX.",
-        "creator_verify": "Nie mogę tego potwierdzić bez oddzielnej weryfikacji właściciela.",
-        "voice_recv": "🎙️ Wiadomość głosowa odebrana. Moduł transkrypcji głosu jest planowany, ale nie został jeszcze włączony.",
-        "only_text": "⚠️ Obecnie obsługiwane są tylko interakcje tekstowe."
+        "generating_img": "🖼️ Синтез графического кадра...",
+        "generating_audio": "🎼 Синтез трека через ИИ-генератор...",
+        "generating_video": "🎥 Постановка рендеринга видеопотока...",
+        "spam_warn": "⚠️ Сработал флуд-контроль. Пожалуйста, подождите.",
+        "only_text": "⚠️ Допускаются только текстовые команды."
     }
 }
 
 def get_text(user_id, key):
     u = get_user(user_id)
     lang = u["language"] if u else "ru"
-    if lang not in STRINGS:
-        lang = "ru"
-    return STRINGS[lang].get(key, STRINGS["ru"][key])
+    return STRINGS.get(lang, STRINGS["ru"]).get(key, STRINGS["ru"][key])
 
-def build_lang_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🇷🇺 Русский", callback_data="setlang_ru"),
-         InlineKeyboardButton(text="🇺🇦 Українська", callback_data="setlang_uk")],
-        [InlineKeyboardButton(text="🇩🇪 Deutsch", callback_data="setlang_de"),
-         InlineKeyboardButton(text="🇬🇧 English", callback_data="setlang_en")],
-        [InlineKeyboardButton(text="🇵🇱 Polski", callback_data="setlang_pl")]
-    ])
+def check_cooldown(user_id):
+    current_time = time.time()
+    if user_id in user_cooldowns:
+        if current_time - user_cooldowns[user_id] < COOLDOWN_TIME:
+            return False
+    user_cooldowns[user_id] = current_time
+    return True
 
-# --- ТЕКСТОВЫЙ КОНВЕЙЕР ИИ (FALLBACK PIPELINE) ---
-
-async def ask_groq(text, history):
-    if not GROQ_API_KEY:
-        raise Exception("Disabled")
-    async with aiohttp.ClientSession() as session:
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        for h in history:
-            messages.append({"role": h["role"], "content": h["content"]})
-        messages.append({"role": "user", "content": text})
-        payload = {"model": "llama-3.1-8b-instant", "messages": messages}
-        headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-        async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers, timeout=10) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                return data["choices"][0]["message"]["content"]
-            raise Exception(f"Status {resp.status}")
-
-async def ask_openrouter(text, history):
-    if not OPENROUTER_API_KEY:
-        raise Exception("Disabled")
-    async with aiohttp.ClientSession() as session:
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        for h in history:
-            messages.append({"role": h["role"], "content": h["content"]})
-        messages.append({"role": "user", "content": text})
-        payload = {"model": "deepseek/deepseek-chat-v3-0324:free", "messages": messages}
-        headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
-        async with session.post("https://openrouter.ai/api/v1/chat/completions", json=payload, headers=headers, timeout=10) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                return data["choices"][0]["message"]["content"]
-            raise Exception(f"Status {resp.status}")
-
-async def ask_cerebras(text, history):
-    if not CEREBRAS_API_KEY:
-        raise Exception("Disabled")
-    async with aiohttp.ClientSession() as session:
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        for h in history:
-            messages.append({"role": h["role"], "content": h["content"]})
-        messages.append({"role": "user", "content": text})
-        payload = {"model": "llama3.1-8b", "messages": messages}
-        headers = {"Authorization": f"Bearer {CEREBRAS_API_KEY}", "Content-Type": "application/json"}
-        async with session.post("https://api.cerebras.ai/v1/chat/completions", json=payload, headers=headers, timeout=10) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                return data["choices"][0]["message"]["content"]
-            raise Exception(f"Status {resp.status}")
-
-async def run_ai_pipeline(text, history):
-    errors = []
-    try:
-        return await ask_groq(text, history)
-    except Exception as e:
-        errors.append(f"Groq -> {e}")
-    try:
-        return await ask_openrouter(text, history)
-    except Exception as e:
-        errors.append(f"OpenRouter -> {e}")
-    try:
-        return await ask_cerebras(text, history)
-    except Exception as e:
-        errors.append(f"Cerebras -> {e}")
-        
-    return "⚠️ Все нейросетевые конвейеры маршрутизации вернули ошибку или перегружены:\n" + "\n".join(errors)
-
-# --- МОНИТОРИНГ ЗДОРОВЬЯ И ТАЙМАУТОВ API (HEALTHCHECK LAYER) ---
-
-async def check_provider_health(url, headers, payload=None, method="POST"):
-    start_time = time.time()
-    try:
-        async with aiohttp.ClientSession() as session:
-            kwargs = {"headers": headers, "timeout": 4}
-            if payload:
-                kwargs["json"] = payload
-            
-            if method == "POST":
-                async_req = session.post(url, **kwargs)
-            else:
-                async_req = session.get(url, **kwargs)
-                
-            async with async_req as resp:
-                latency = int((time.time() - start_time) * 1000)
-                if resp.status == 200:
-                    return f"✅ ACTIVE ({latency}ms)"
-                elif resp.status in [401, 403]:
-                    return f"❌ AUTH ERROR (Code {resp.status})"
-                elif resp.status == 429:
-                    return "⚠️ RATE LIMIT EXCEEDED"
-                else:
-                    return f"❌ ERROR (Code {resp.status})"
-    except asyncio.TimeoutError:
-        return "⏳ TIMEOUT (No Response)"
-    except Exception:
-        return "💀 NETWORK UNREACHABLE"
-
-async def get_real_health_matrix():
-    tasks = {}
-    if GROQ_API_KEY:
-        tasks["groq"] = check_provider_health(
-            "https://api.groq.com/openai/v1/chat/completions",
-            {"Authorization": f"Bearer {GROQ_API_KEY}"},
-            {"model": "llama-3.1-8b-instant", "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}
-        )
-    if OPENROUTER_API_KEY:
-        tasks["openrouter"] = check_provider_health(
-            "https://openrouter.ai/api/v1/chat/completions",
-            {"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
-            {"model": "deepseek/deepseek-chat-v3-0324:free", "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}
-        )
-    if CEREBRAS_API_KEY:
-        tasks["cerebras"] = check_provider_health(
-            "https://api.cerebras.ai/v1/chat/completions",
-            {"Authorization": f"Bearer {CEREBRAS_API_KEY}"},
-            {"model": "llama3.1-8b", "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}
-        )
-    if TAVILY_API_KEY:
-        tasks["tavily"] = check_provider_health(
-            "https://api.tavily.com/search", {}, 
-            {"api_key": TAVILY_API_KEY, "query": "ping", "max_results": 1}
-        )
-    if CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN:
-        tasks["cloudflare"] = check_provider_health(
-            f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/meta/llama-3.1-8b-instruct",
-            {"Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}"},
-            {"prompt": "ping", "max_tokens": 1}
-        )
-        
-    results = {}
-    if tasks:
-        keys = list(tasks.keys())
-        res_list = await asyncio.gather(*tasks.values(), return_exceptions=True)
-        for i, key in enumerate(keys):
-            results[key] = res_list[i] if isinstance(res_list[i], str) else "❌ ERROR"
-            
-    return results
-
-# --- УПРАВЛЕНИЕ ПРОФИЛЕМ ПОЛЬЗОВАТЕЛЯ ---
-
-def parse_and_store_profile(user_id, text):
-    t = text.lower()
-    markers = ["меня зовут", "моё имя", "мое имя", "my name is", "ich heiße", "ich heisse", "зовут меня"]
-    found = False
-    for marker in markers:
-        if marker in t:
-            found = True
-            break
-    if not found:
-        return
-    clean_text = text
-    for marker in markers:
-        if marker in clean_text.lower():
-            idx = clean_text.lower().find(marker)
-            clean_text = clean_text[idx + len(marker):].strip()
-            break
-    parts = clean_text.split()
-    if not parts:
-        return
-    display_name = " ".join(parts[:3])
-    update_user_name(user_id, display_name)
-    if len(parts) > 3:
-        fact_text = " ".join(parts[3:])
-        save_long_fact(user_id, fact_text)
-
-# --- ОБРАБОТЧИКИ СОБЫТИЙ И ТЕКСТОВЫЙ ПРОЦЕССИНГ ---
-
-async def send_split_message(message, text):
+# 4. КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Безопасный построчный сплиттер текстовых блоков
+async def send_split_message(message, text, parse_mode=None):
+    """Нарезает текст строго по строкам, исключая повреждение HTML тегов на границах блоков"""
     if len(text) <= 4000:
-        await message.answer(text)
+        await message.answer(text, parse_mode=parse_mode)
         return
-    for i in range(0, len(text), 4000):
-        await message.answer(text[i:i+4000])
+        
+    lines = text.split("\n")
+    buffer = ""
+    for line in lines:
+        if len(buffer) + len(line) + 1 > 4000:
+            if buffer.strip():
+                await message.answer(buffer, parse_mode=parse_mode)
+            buffer = line
+        else:
+            buffer += "\n" + line if buffer else line
+            
+    if buffer.strip():
+        await message.answer(buffer, parse_mode=parse_mode)
+
+# --- 3. ИСПРАВЛЕНИЕ: ПОЛНЫЙ 4-УРОВНЕВЫЙ ИИ КАСКАД С УЧАСТИЕМ OLLAMA ---
+async def run_ai_pipeline(text, history):
+    if not http_session:
+        return "❌ Системный сетевой шлюз не готов."
+    
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": text})
+
+    # УРОВЕНЬ 1: Groq Engine
+    if GROQ_API_KEY:
+        try:
+            headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+            payload = {"model": "llama-3.1-8b-instant", "messages": messages}
+            async with http_session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers, timeout=8) as resp:
+                if resp.status == 200:
+                    return (await resp.json())["choices"][0]["message"]["content"]
+        except Exception as e: logger.warning(f"Каскад: Groq недоступен ({e})")
+
+    # УРОВЕНЬ 2: Cerebras Engine
+    if CEREBRAS_API_KEY:
+        try:
+            headers = {"Authorization": f"Bearer {CEREBRAS_API_KEY}", "Content-Type": "application/json"}
+            payload = {"model": "llama3.1-8b", "messages": messages}
+            async with http_session.post("https://api.cerebras.ai/v1/chat/completions", json=payload, headers=headers, timeout=8) as resp:
+                if resp.status == 200:
+                    return (await resp.json())["choices"][0]["message"]["content"]
+        except Exception as e: logger.warning(f"Каскад: Cerebras недоступен ({e})")
+
+    # УРОВЕНЬ 3: OpenRouterбесплатный пул
+    if OPENROUTER_API_KEY:
+        try:
+            headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+            payload = {"model": "meta-llama/llama-3.1-8b-instruct:free", "messages": messages}
+            async with http_session.post("https://openrouter.ai/api/v1/chat/completions", json=payload, headers=headers, timeout=10) as resp:
+                if resp.status == 200:
+                    return (await resp.json())["choices"][0]["message"]["content"]
+        except Exception as e: logger.warning(f"Каскад: OpenRouter недоступен ({e})")
+
+    # УРОВЕНЬ 4: Локальный инференс Ollama (Замыкающий парашют)
+    if OLLAMA_BASE_URL:
+        try:
+            url = f"{OLLAMA_BASE_URL.rstrip('/')}/api/generate"
+            payload = {"model": "llama3", "prompt": text, "stream": False}
+            async with http_session.post(url, json=payload, timeout=20) as resp:
+                if resp.status == 200:
+                    return (await resp.json()).get("response", "")
+        except Exception as e: logger.error(f"Каскад: Ollama Core недоступен ({e})")
+
+    return "⚠️ Критический сбой: Все 4 уровня каскадной ИИ-матрицы (Groq, Cerebras, OpenRouter, Ollama) не ответили."
+
+# --- МУЛЬТИМЕДИА ГЕНЕРАТОРЫ ---
+async def generate_pollinations(prompt):
+    if not POLLINATIONS_ENABLED:
+        raise Exception("Интеграция Pollinations отключена.")
+    return f"https://image.pollinations.ai/prompt/{quote(prompt)}"
+
+async def generate_music_huggingface(prompt: str) -> bytes:
+    if not HUGGINGFACE_API_KEY:
+        raise Exception("Отсутствует HUGGINGFACE_API_KEY.")
+    url = "https://api-inference.huggingface.co/models/facebook/musicgen-melody"
+    headers = {"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"}
+    async with http_session.post(url, headers=headers, json={"inputs": prompt}, timeout=65) as resp:
+        if resp.status == 200: return await resp.read()
+        raise Exception(f"HF Error Status: {resp.status}")
+
+# 5. КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Безопасный парсинг JSON ответов от Fal.ai
+async def generate_video_fal(prompt: str) -> str:
+    if not FAL_API_KEY:
+        raise Exception("Отсутствует FAL_API_KEY.")
+    url = "https://queue.fal.run/fal-ai/luma-dream-machine"
+    headers = {"Authorization": f"Key {FAL_API_KEY}", "Content-Type": "application/json"}
+    payload = {"prompt": prompt, "aspect_ratio": "16:9"}
+    
+    async with http_session.post(url, headers=headers, json=payload, timeout=15) as resp:
+        if resp.status != 200: raise Exception(f"Fal.ai Core Error: {resp.status}")
+        status_url = (await resp.json()).get("status_url")
+        
+    if not status_url: raise Exception("Не получен status_url от очереди рендеринга.")
+
+    for _ in range(30):
+        await asyncio.sleep(4)
+        async with http_session.get(status_url, headers=headers, timeout=10) as check_resp:
+            if check_resp.status == 200:
+                data = await check_resp.json()
+                if data.get("status", "").upper() == "COMPLETED":
+                    # Безопасное извлечение без угрозы KeyError
+                    video_node = data.get("video") or {}
+                    final_url = video_node.get("url")
+                    if final_url: return final_url
+                    raise Exception("Рендеринг завершен, но url в узле 'video' пуст.")
+    raise Exception("Таймаут сборки видеопотока.")
+
+# --- КОМАНДЫ ТЕЛЕГРАМ БОТА ---
+
+# 4. КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Валидация http_session добавлена во все хэндлеры
+async def is_session_dead(message: types.Message) -> bool:
+    if not http_session:
+        await message.answer("❌ Внутренняя HTTP-сессия ядра не готова или была закрыта.")
+        return True
+    return False
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     save_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
-    await message.answer("🌍 Выберите язык / Choose language / Sprache wählen / Wybierz język:", reply_markup=build_lang_keyboard())
+    await message.answer(STRINGS["ru"]["welcome"], parse_mode="HTML")
 
-@dp.message(Command("language"))
-async def cmd_language(message: types.Message):
-    await message.answer("🌍 Выберите язык / Choose language:", reply_markup=build_lang_keyboard())
-
-@dp.callback_query(lambda c: c.data.startswith("setlang_"))
-async def callback_set_lang(callback: CallbackQuery):
-    lang = callback.data.split("_")[1]
-    update_user_lang(callback.from_user.id, lang)
-    await callback.message.delete()
-    await callback.message.answer(STRINGS[lang]["welcome"])
-    await callback.answer()
-
-def chk(env):
-    return "✅ CONFIG_LOADED" if env else "❌ DISABLED"
-
+# 3. ИСПРАВЛЕНИЕ: ДИАГНОСТИЧЕСКАЯ КОМАНДА /status ДЛЯ АУДИТА ВСЕХ ENV
 @dp.message(Command("status"))
 async def cmd_status(message: types.Message):
-    status_msg = await message.answer("📡 Опрос узлов матрицы и замер Latency...")
-    h = await get_real_health_matrix()
+    def check(val): return "🟢 LOADED" if val else "🔴 MISSING"
     
-    def display_state(key, env_token):
-        if not env_token:
-            return "❌ DISABLED"
-        return h.get(key, "✅ ACTIVE (No ping schema)")
-        
-    out = "📊 МОНИТОРИНГ СИСТЕМНЫХ МАТРИЦ И МОДУЛЕЙ AION (TEXT ONLY):\n\n"
-    out += "🌍 Universal Language Layer: ✅ ACTIVE / expandable\n"
-    out += "🧬 AI Orchestration Core: ✅ Multi-provider / future-ready\n\n"
-    out += f"🤖 Groq Core Pipeline: {display_state('groq', GROQ_API_KEY)}\n"
-    out += f"🌐 OpenRouter Central Node: {display_state('openrouter', OPENROUTER_API_KEY)}\n"
-    out += f"⚡ Cerebras Ultra-Latency: {display_state('cerebras', CEREBRAS_API_KEY)}\n"
-    out += f"🔍 Tavily Search Intelligence: {display_state('tavily', TAVILY_API_KEY)}\n"
-    out += f"📂 GitHub API Repository Agent: {chk(GITHUB_TOKEN)}\n"
-    out += f"🛠️ Render DevOps Controller: {chk(RENDER_API_KEY)}\n"
-    out += f"☁️ Cloudflare Workers Edge AI: {display_state('cloudflare', CLOUDFLARE_API_TOKEN)}\n"
-    out += f"🏠 Ollama Local Node Endpoint: {chk(OLLAMA_BASE_URL)}\n"
-    out += "🗄️ SQLite Database Memory State: ✅ СТАТИЧЕН\n"
+    report = (
+        "📊 <b>ИНФРАСТРУКТУРНЫЙ СТАТУС КЛЮЧЕЙ МАТРИЦЫ:</b>\n\n"
+        f"1️⃣ <b>BOT_TOKEN:</b> {check(BOT_TOKEN)}\n"
+        f"2️⃣ <b>GROQ_API_KEY:</b> {check(GROQ_API_KEY)}\n"
+        f"3️⃣ <b>CEREBRAS_API_KEY:</b> {check(CEREBRAS_API_KEY)}\n"
+        f"4️⃣ <b>OPENROUTER_API_KEY:</b> {check(OPENROUTER_API_KEY)}\n"
+        f"5️⃣ <b>OLLAMA_BASE_URL:</b> {check(OLLAMA_BASE_URL)}\n"
+        f"6️⃣ <b>TAVILY_API_KEY:</b> {check(TAVILY_API_KEY)}\n"
+        f"7️⃣ <b>GITHUB_TOKEN:</b> {check(GITHUB_TOKEN)}\n"
+        f"8️⃣ <b>RENDER_API_KEY:</b> {check(RENDER_API_KEY)}\n"
+        f"9️⃣ <b>CLOUDFLARE_ACCOUNT_ID:</b> {check(CLOUDFLARE_ACCOUNT_ID)}\n"
+        f"🔟 <b>CLOUDFLARE_API_TOKEN:</b> {check(CLOUDFLARE_API_TOKEN)}\n"
+        f"1️⃣1️⃣ <b>HUGGINGFACE_API_KEY:</b> {check(HUGGINGFACE_API_KEY)}\n"
+        f"1️⃣2️⃣ <b>FAL_API_KEY:</b> {check(FAL_API_KEY)}\n\n"
+        f"⚙️ <b>POLLINATIONS_ENABLED:</b> {str(POLLINATIONS_ENABLED).upper()}\n"
+        f"🔌 <b>PORT:</b> <code>{PORT}</code>"
+    )
+    await message.answer(report, parse_mode="HTML")
+
+@dp.message(Command("image"))
+async def cmd_image(message: types.Message):
+    if await is_session_dead(message) or not check_cooldown(message.from_user.id): return
+    prompt = message.text.replace("/image", "").strip()
+    if not prompt: return await message.answer("⚠️ Использование: /image [ваш промпт]")
     
-    await status_msg.delete()
-    await message.answer(out)
+    status = await message.answer(get_text(message.from_user.id, "generating_img"))
+    try:
+        url = await generate_pollinations(prompt)
+        await status.delete()
+        await message.answer_photo(photo=url, caption=f"🎨 <b>Image Prompt:</b> {html.escape(prompt)}", parse_mode="HTML")
+    except Exception as e: await status.edit_text(f"❌ Ошибка графики: {e}")
+
+@dp.message(Command("music"))
+async def cmd_music(message: types.Message):
+    if await is_session_dead(message) or not check_cooldown(message.from_user.id): return
+    prompt = message.text.replace("/music", "").strip()
+    if not prompt: return await message.answer("⚠️ Использование: /music [описание]")
+    
+    status = await message.answer(get_text(message.from_user.id, "generating_audio"))
+    try:
+        audio_bytes = await generate_music_huggingface(prompt)
+        await status.delete()
+        await message.answer_audio(audio=BufferedInputFile(audio_bytes, filename="music.wav"), caption=f"🎼 <b>Track Prompt:</b> {html.escape(prompt)}", parse_mode="HTML")
+    except Exception as e: await status.edit_text(f"❌ Сбой аудио: {e}")
+
+@dp.message(Command("video"))
+async def cmd_video(message: types.Message):
+    if await is_session_dead(message) or not check_cooldown(message.from_user.id): return
+    prompt = message.text.replace("/video", "").strip()
+    if not prompt: return await message.answer("⚠️ Использование: /video [описание сцены]")
+    
+    status = await message.answer(get_text(message.from_user.id, "generating_video"))
+    try:
+        url = await generate_video_fal(prompt)
+        await status.delete()
+        await message.answer_video(video=url, caption=f"🎥 <b>AI Video Render</b>", parse_mode="HTML")
+    except Exception as e: await status.edit_text(f"❌ Сбой видео: {e}")
 
 @dp.message(Command("search"))
 async def cmd_search(message: types.Message):
+    if await is_session_dead(message) or not check_cooldown(message.from_user.id): return
+    if not TAVILY_API_KEY: return await message.answer("❌ Поисковый слой Tavily отключен.")
     query = message.text.replace("/search", "").strip()
-    if not query:
-        await message.answer("⚠️ Использование: /search [ваш запрос]")
-        return
-    if not TAVILY_API_KEY:
-        await message.answer("❌ Модуль веб-поиска Tavily не сконфигурирован.")
-        return
+    if not query: return await message.answer("⚠️ Использование: /search [запрос]")
     
     status_msg = await message.answer(get_text(message.from_user.id, "thinking"))
     try:
-        async with aiohttp.ClientSession() as session:
-            payload = {"api_key": TAVILY_API_KEY, "query": query, "search_depth": "basic", "max_results": 5}
-            async with session.post("https://api.tavily.com/search", json=payload, timeout=15) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    results = data.get("results", [])
-                    out = f"🔍 Результаты веб-поиска по запросу: {query}\n\n"
-                    for r in results:
-                        out += f"🔹 {r.get('title')}\n{r.get('content', '')}\n🔗 {r.get('url')}\n\n"
-                    await status_msg.delete()
-                    await send_split_message(message, out)
-                else:
-                    await status_msg.edit_text(f"❌ Ошибка Tavily API: status {resp.status}")
-    except Exception as e:
-        await status_msg.edit_text(f"❌ Сбой выполнения поиска: {e}")
+        payload = {"api_key": TAVILY_API_KEY, "query": query, "search_depth": "basic", "max_results": 3}
+        async with http_session.post("https://api.tavily.com/search", json=payload, timeout=12) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                out = f"🔍 <b>Результаты поиска по запросу:</b> {html.escape(query)}\n\n"
+                for r in data.get("results", []):
+                    out += f"🔹 <b>{html.escape(r.get('title', ''))}</b>\n{html.escape(r.get('content', ''))}\n🔗 {html.escape(r.get('url', ''))}\n\n"
+                await status_msg.delete()
+                # 4. ИСПРАВЛЕНИЕ: Безопасная отправка через обновленный send_split_message
+                await send_split_message(message, out, parse_mode="HTML")
+            else: await status_msg.edit_text(f"❌ Ошибка API поиска: {resp.status}")
+    except Exception as e: await status_msg.edit_text(f"❌ Сбой поиска: {e}")
 
-@dp.message(Command("memory"))
-async def cmd_memory(message: types.Message):
-    u = get_user(message.from_user.id)
-    if not u:
-        await message.answer("⚠️ Профиль пользователя не найден.")
-        return
-    disp = u["display_name"] if u["display_name"] else "Не зафиксировано"
-    short_mem = get_chat_memory(message.from_user.id)
-    long_mem = get_long_memory(message.from_user.id)
+@dp.message(Command("ollama"))
+async def cmd_ollama(message: types.Message):
+    if await is_session_dead(message): return
+    if not OLLAMA_BASE_URL: return await message.answer("❌ OLLAMA_BASE_URL не задан.")
+    prompt = message.text.replace("/ollama", "").strip()
+    if not prompt: return await message.answer("⚠️ Использование: /ollama [текст]")
     
-    out = "🧠 АРХИТЕКТУРА И СОСТОЯНИЕ ПАМЯТИ:\n\n"
-    out += f"Имя в реестре системы: {disp}\n\n"
-    out += f"💬 Краткосрочный буфер ({len(short_mem)} фреймов):\n"
-    for m in short_mem:
-        out += f"- [{m['role'].upper()}]: {m['content'][:50]}...\n"
-    out += f"\n📂 Долговременный сектор фактов ({len(long_mem)} записей):\n"
-    for f in long_mem:
-        out += f"- {f}\n"
-    await send_split_message(message, out)
+    status = await message.answer("🦙 Опрос локальной ноды Ollama...")
+    try:
+        url = f"{OLLAMA_BASE_URL.rstrip('/')}/api/generate"
+        async with http_session.post(url, json={"model": "llama3", "prompt": prompt, "stream": False}, timeout=25) as resp:
+            if resp.status == 200:
+                res = await resp.json()
+                await status.delete()
+                # ИСПРАВЛЕНО: Добавлено экранирование контента и parse_mode="HTML"
+                await send_split_message(message, f"🦙 <b>Ollama Output:</b>\n\n{html.escape(res.get('response', ''))}", parse_mode="HTML")
+            else: await status.edit_text(f"❌ Ошибка ноды Ollama: {resp.status}")
+    except Exception as e: await status.edit_text(f"❌ Сбой связи: {e}")
 
-@dp.message(Command("clearall"))
-async def cmd_clearall(message: types.Message):
-    clear_all_memory(message.from_user.id)
-    await message.answer("💥 Полный сброс параметров памяти и профиля пользователя успешно завершен.")
+@dp.message(Command("github"))
+async def cmd_github(message: types.Message):
+    if await is_session_dead(message): return
+    repo = message.text.replace("/github", "").strip()
+    if not repo or "/" not in repo: return await message.answer("⚠️ Использование: /github [owner/repo]")
+    
+    headers = {"Accept": "application/vnd.github+json"}
+    if GITHUB_TOKEN: headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+    
+    status = await message.answer("🐙 Опрос GitHub API...")
+    try:
+        async with http_session.get(f"https://api.github.com/repos/{repo}", headers=headers, timeout=10) as resp:
+            if resp.status == 200:
+                d = await resp.json()
+                out = (
+                    f"🐙 <b>Репозиторий:</b> {html.escape(d.get('full_name', ''))}\n"
+                    f"⭐ <b>Stars:</b> {d.get('stargazers_count')} | 🍴 <b>Forks:</b> {d.get('forks_count')}\n"
+                    f"🔗 <a href='{html.escape(d.get('html_url', ''))}'>Открыть проект</a>"
+                )
+                await status.delete()
+                await message.answer(out, parse_mode="HTML", disable_web_page_preview=True)
+            else: await status.edit_text(f"❌ Ошибка API: {resp.status}")
+    except Exception as e: await status.edit_text(f"❌ Сбой: {e}")
 
-@dp.message(lambda msg: msg.voice is not None)
-async def handle_voice(message: types.Message):
-    await message.answer(get_text(message.from_user.id, "voice_recv"))
+@dp.message(Command("render"))
+async def cmd_render(message: types.Message):
+    if await is_session_dead(message): return
+    if not RENDER_API_KEY: return await message.answer("❌ RENDER_API_KEY отсутствует.")
+    
+    status = await message.answer("🧬 Опрос Render Cloud API...")
+    headers = {"Authorization": f"Bearer {RENDER_API_KEY}", "Accept": "application/json"}
+    try:
+        async with http_session.get("https://api.render.com/v1/services?limit=3", headers=headers, timeout=10) as resp:
+            if resp.status == 200:
+                services = await resp.json()
+                out = "🧬 <b>Активные сервисы Render:</b>\n\n"
+                for s in services:
+                    srv = s.get("service", {})
+                    out += f"🖥️ <b>{html.escape(srv.get('name', ''))}</b> [<code>{srv.get('type', '')}</code>]\n⏱️ Сборка: <code>{srv.get('updatedAt', '')}</code>\n\n"
+                await status.delete()
+                await message.answer(out, parse_mode="HTML")
+            else: await status.edit_text(f"❌ Render API Error: {resp.status}")
+    except Exception as e: await status.edit_text(f"❌ Сбой: {e}")
+
+@dp.message(Command("cloudflare"))
+async def cmd_cloudflare(message: types.Message):
+    if await is_session_dead(message): return
+    if not CLOUDFLARE_API_TOKEN: return await message.answer("❌ CLOUDFLARE_API_TOKEN отсутствует.")
+    
+    status = await message.answer("☁️ Чтение конфигурации Cloudflare...")
+    headers = {"Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}"}
+    try:
+        async with http_session.get("https://api.cloudflare.com/client/v4/zones?status=active", headers=headers, timeout=10) as resp:
+            if resp.status == 200:
+                zones = (await resp.json()).get("result", [])
+                out = "☁️ <b>Активные зоны Cloudflare:</b>\n\n"
+                for z in zones[:3]:
+                    out += f"🌐 <b>{html.escape(z.get('name', ''))}</b>\n🆔 ID: <code>{z.get('id', '')}</code>\n\n"
+                await status.delete()
+                await message.answer(out, parse_mode="HTML")
+            else: await status.edit_text(f"❌ Cloudflare Error: {resp.status}")
+    except Exception as e: await status.edit_text(f"❌ Сбой Cloudflare API: {e}")
 
 @dp.message()
 async def chat_processor(message: types.Message):
-    user_id = message.from_user.id
+    if not message.text: return await message.answer(get_text(message.from_user.id, "only_text"))
+    save_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     
-    if not message.text:
-        save_user(user_id, message.from_user.username, message.from_user.first_name)
-        await message.answer(get_text(user_id, "only_text"))
-        return
-
-    save_user(user_id, message.from_user.username, message.from_user.first_name)
-    text_lower = message.text.lower()
-    
-    if any(q in text_lower for q in ["кто твой создатель", "кто тебя создал", "чей это проект", "кто создатель"]):
-        await message.answer(get_text(user_id, "creator"))
-        return
-
-    if text_lower in ["как меня зовут", "скажи мое имя", "кто я", "выведи мое имя"]:
-        u = get_user(user_id)
-        if u and u["display_name"]:
-            await message.answer(u["display_name"])
-        else:
-            await message.answer(get_text(user_id, "no_name"))
-        return
-
-    parse_and_store_profile(user_id, message.text)
-    history = get_chat_memory(user_id, limit=12)
-    status_msg = await message.answer(get_text(user_id, "thinking"))
+    status_msg = await message.answer(get_text(message.from_user.id, "thinking"))
+    history = get_chat_memory(message.from_user.id, limit=6)
     
     response_text = await run_ai_pipeline(message.text, history)
     
-    save_chat_memory(user_id, "user", message.text)
-    save_chat_memory(user_id, "assistant", response_text)
+    save_chat_memory(message.from_user.id, "user", message.text)
+    save_chat_memory(message.from_user.id, "assistant", response_text)
     
     await status_msg.delete()
+    # Безопасный вывод ответа любой длины
     await send_split_message(message, response_text)
 
-# --- ВЕБ-ИНТЕРФЕЙС / HEALTHCHECK СЕРВЕР ---
-
+# --- HEALTHCHECK SERVER ---
 async def handle_web_root(request):
-    html = """<!DOCTYPE html>
-<html><head><title>AION MATRIX NET</title><style>body { background-color: #0b0c10; color: #45f3ff; font-family: sans-serif; text-align: center; padding-top: 80px; }</style></head>
-<body><h1>🌌 AION MATRIX CORE</h1><p>Adaptive Text Orchestration Engine is Active.</p></body></html>"""
-    return web.Response(text=html, content_type="text/html")
+    return web.Response(text="<h1>AION SUPREME MATRIX ENGINE IS ONLINE</h1>", content_type="text/html")
 
 async def start_web_server():
     app = web.Application()
     app.router.add_get("/", handle_web_root)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
+    await web.TCPSite(runner, "0.0.0.0", PORT).start()
 
 async def main():
-    global bot
-    if not BOT_TOKEN:
-        logger.error("Критическая ошибка: BOT_TOKEN отсутствует в переменных окружения.")
-        sys.exit(1)
+    global bot, http_session
+    if not BOT_TOKEN: sys.exit("Критическая ошибка: отсутствует BOT_TOKEN.")
         
     bot = Bot(token=BOT_TOKEN)
+    http_session = aiohttp.ClientSession()
+    
     init_db()
     await start_web_server()
-    
     try:
         await dp.start_polling(bot)
     finally:
-        await bot.session.close()  # Гарантированное закрытие сессии при SIGTERM/Shutdown
+        await http_session.close()
+        await bot.session.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
