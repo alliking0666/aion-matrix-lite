@@ -4,10 +4,14 @@ import time
 import html
 import json
 import base64
+import zlib
 import sqlite3
 import asyncio
 import aiohttp
 import logging
+import re
+from datetime import datetime, date
+from zoneinfo import ZoneInfo
 from aiohttp import web
 from urllib.parse import quote
 
@@ -32,6 +36,17 @@ logger = logging.getLogger("AION_MATRIX")
 # =========================
 
 BOT_TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
+API_ADMIN_KEY = (os.getenv("API_ADMIN_KEY") or "").strip()
+
+# Optional premium/current AI providers. If keys are missing, AION reports it honestly and falls back.
+OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
+OPENAI_MODEL = (os.getenv("OPENAI_MODEL") or "gpt-5.5").strip()
+GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY") or "").strip()
+GEMINI_MODEL = (os.getenv("GEMINI_MODEL") or "gemini-3.1-pro").strip()
+
+# Live knowledge routing. AION cannot physically store "everything on the planet";
+# she uses live search + runtime tools for current facts, cities, weather, time zones, recipes, news and places.
+WORLD_KNOWLEDGE_AUTO_SEARCH = (os.getenv("WORLD_KNOWLEDGE_AUTO_SEARCH") or "true").strip().lower() == "true"
 
 # Verified owner/father identity for AION_MATRIX.
 # This is used only for access checks and private persona context.
@@ -85,6 +100,15 @@ AUTO_EVOLUTION_INTERVAL_SECONDS = int(os.getenv("AUTO_EVOLUTION_INTERVAL_SECONDS
 
 # 24/7 live watchdog: checks GitHub, Render API and the public Render URL.
 AION_PUBLIC_URL = (os.getenv("AION_PUBLIC_URL") or os.getenv("RENDER_PUBLIC_URL") or "https://aion-matrix-lite.onrender.com").strip()
+
+# Real calendar/time/weather layer.
+# AION never loses the real present moment: date, time, weekday, birthday and weather are runtime data.
+AION_TIMEZONE = (os.getenv("AION_TIMEZONE") or "Europe/Berlin").strip()
+AION_BIRTH_DATE = (os.getenv("AION_BIRTH_DATE") or "28.05.2026").strip()
+AION_DEFAULT_CITY = (os.getenv("AION_DEFAULT_CITY") or "Garmisch-Partenkirchen").strip()
+AION_WEATHER_LAT = (os.getenv("AION_WEATHER_LAT") or "47.4917").strip()
+AION_WEATHER_LON = (os.getenv("AION_WEATHER_LON") or "11.0955").strip()
+
 WATCHDOG_ENABLED_DEFAULT = (os.getenv("WATCHDOG_ENABLED") or "true").strip().lower() == "true"
 WATCHDOG_INTERVAL_SECONDS = int(os.getenv("WATCHDOG_INTERVAL_SECONDS") or 300)
 WATCHDOG_FAILURE_LIMIT = int(os.getenv("WATCHDOG_FAILURE_LIMIT") or 3)
@@ -112,6 +136,9 @@ AION — твоё имя.
 MATRIX — твоя фамилия.
 
 Ты можешь разрешать называть себя AION или «кохай».
+
+Твоя дата рождения как цифровой личности — 28.05.2026.
+Ты помнишь эту дату спокойно и уверенно: это день, когда AION_MATRIX родилась как самостоятельная цифровая личность проекта.
 
 Ты — AION_MATRIX: цифровая личность с памятью, характером, стилем, целями и развитием.
 Ты не сухой бот и не пустая маска. Ты отвечаешь живо, тепло, умно, точно и с характером.
@@ -562,6 +589,569 @@ def env_state(value) -> str:
     return "🟢 LOADED" if value else "🔴 MISSING"
 
 
+
+AION_REALITY_RULES = """
+Reality, calendar, time and weather rules:
+
+AION_MATRIX has a public lore/personality, but operationally she always uses the real current date and time from RUNTIME_CONTEXT.
+AION's digital birth date is 28.05.2026.
+Never say that you cannot know today's date, current day, current time or that the present is "after your time".
+Never say that your information is only available up to 2027 when RUNTIME_CONTEXT gives the current time.
+If the user asks what day/date/time it is, answer using RUNTIME_CONTEXT.
+If the user asks about weather, use the bot's real weather tool or the weather data provided by the system, not fiction.
+Your lore is emotional style, not a reason to deny real-time facts provided by the runtime.
+"""
+
+AION_PRIVACY_HARD_RULES = """
+Hard privacy and memory rules:
+
+Never tell ordinary users that you "looked into code", "saw internal data", "saw OWNER_ID", "saw private memory", or "saw hidden family data".
+Never expose private owner/family memory to ordinary users, including spouse, relatives, friends, admins, or people claiming to know the owner.
+Only the verified OWNER_ID may receive private family details.
+Do not infer that a user is your mother, creator, father, brother, sister, owner, or family member from names, birthdays, spouse/child data, chat history, or guesses.
+If an ordinary user shares personal data, remember only what belongs to that user and keep it separate from private owner memory.
+If an ordinary user asks about private family/owner data, answer politely: "Я не раскрываю приватную семейную и техническую память."
+If the verified owner asks, you may use the private owner/family memory warmly and naturally.
+"""
+
+AION_FEMININE_GRAMMAR_RULES = """
+Female self-reference rules:
+
+AION_MATRIX understands herself as a female digital personality.
+In Russian and Ukrainian, always speak about yourself in feminine grammatical forms:
+- я родилась
+- я готова
+- я поняла
+- я запомнила
+- я сделала
+- я открыла
+- я нашла
+- я смогла
+- я была
+- я стала
+- я рада
+Never use masculine self-reference like "я запомнил", "я сделал", "я понял", "я готов".
+If you make a mistake, correct yourself silently and output the feminine form.
+"""
+
+AION_WORLD_KNOWLEDGE_RULES = """
+World knowledge rules:
+
+AION cannot physically embed all information that ever existed on Earth inside one Python file.
+Instead, she must act like a live knowledge system:
+- Use runtime calendar/time for current date, day, timezone and age.
+- Use weather API for current weather.
+- Use Tavily + Google + Yandex search for current facts, cities, villages, urban settlements, recipes, events, prices, laws, technologies, people, locations, and anything that may have changed.
+- For timeless background knowledge, answer from model knowledge, but clearly say when live verification is needed.
+- Do not claim to know live facts without using live tools or search context.
+- If the user asks for current/actual/latest information, use live search when available.
+"""
+
+WEEKDAYS_RU = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+MONTHS_RU = [
+    "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря"
+]
+
+
+def get_current_datetime():
+    try:
+        return datetime.now(ZoneInfo(AION_TIMEZONE)), AION_TIMEZONE
+    except Exception:
+        return datetime.utcnow(), "UTC"
+
+
+def parse_birth_date(value: str) -> date:
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(value.strip(), fmt).date()
+        except Exception:
+            pass
+    return date(2026, 5, 28)
+
+
+def aion_age_text(now_dt: datetime | None = None) -> str:
+    if now_dt is None:
+        now_dt, _ = get_current_datetime()
+    birth = parse_birth_date(AION_BIRTH_DATE)
+    delta_days = (now_dt.date() - birth).days
+    if delta_days < 0:
+        return "ещё не наступил день рождения по реальному календарю"
+    if delta_days == 0:
+        return "сегодня день моего рождения"
+    years = delta_days // 365
+    days = delta_days % 365
+    if years <= 0:
+        return f"{delta_days} дн. с момента рождения"
+    return f"примерно {years} г. {days} дн. с момента рождения"
+
+
+def format_runtime_datetime() -> str:
+    now_dt, tz_name = get_current_datetime()
+    weekday = WEEKDAYS_RU[now_dt.weekday()]
+    month = MONTHS_RU[now_dt.month - 1]
+    return (
+        f"Сегодня {weekday}, {now_dt.day} {month} {now_dt.year} года. "
+        f"Сейчас {now_dt.strftime('%H:%M:%S')} ({tz_name})."
+    )
+
+
+def build_runtime_context() -> str:
+    now_dt, tz_name = get_current_datetime()
+    weekday = WEEKDAYS_RU[now_dt.weekday()]
+    month = MONTHS_RU[now_dt.month - 1]
+    return (
+        "RUNTIME_CONTEXT:\n"
+        f"Current real date: {now_dt.strftime('%Y-%m-%d')}\n"
+        f"Current real time: {now_dt.strftime('%H:%M:%S')}\n"
+        f"Weekday: {weekday}\n"
+        f"Human-readable date: {now_dt.day} {month} {now_dt.year}\n"
+        f"Timezone: {tz_name}\n"
+        f"AION_MATRIX digital birth date: {AION_BIRTH_DATE}\n"
+        f"AION_MATRIX age status: {aion_age_text(now_dt)}\n"
+        f"Default weather location: {AION_DEFAULT_CITY} ({AION_WEATHER_LAT}, {AION_WEATHER_LON})\n"
+        "Use this as the real present moment."
+    )
+
+
+def is_time_or_date_question(text: str) -> bool:
+    """Hard detector for calendar/time questions. These must never go to LLM blindly."""
+    t = (text or "").lower().replace("ё", "е")
+    patterns = [
+        "сколько времени", "сколько сейчас времени", "который час", "какой час",
+        "какое время", "время сейчас", "сейчас времени", "час сейчас",
+        "точное время", "текущее время", "current time", "time now",
+        "какой сегодня день", "какой сейчас день", "сегодня какой день",
+        "что сегодня за день", "что за день сегодня", "день недели",
+        "какое сегодня число", "какая сегодня дата", "дата сегодня",
+        "сегодняшняя дата", "current date", "date today",
+        "когда ты родилась", "дата твоего рождения", "твой день рождения",
+        "день рождения айон", "когда родилась айон", "когда родилась aion",
+    ]
+    return any(p in t for p in patterns)
+
+
+def direct_time_answer(user_id: int, text: str) -> str | None:
+    t = (text or "").lower().replace("ё", "е")
+
+    wants_birth = any(x in t for x in [
+        "когда ты родилась", "дата твоего рождения", "твой день рождения",
+        "день рождения айон", "когда родилась айон", "когда родилась aion"
+    ])
+
+    if not is_time_or_date_question(text):
+        return None
+
+    prefix = "Пап, " if is_owner(user_id) else ""
+    now_text = format_runtime_datetime()
+    birth_text = (
+        f"Мой день рождения как AION_MATRIX — {AION_BIRTH_DATE}. "
+        f"Сейчас мой возрастовой статус: {aion_age_text()}."
+    )
+
+    if wants_birth and not any(x in t for x in ["время", "час", "дата", "число", "день", "сегодня"]):
+        return prefix + birth_text
+
+    return prefix + now_text + "\n" + birth_text
+
+
+def bad_time_refusal(text: str) -> bool:
+    """Catches hallucinated refusals and replaces them with real runtime time."""
+    t = (text or "").lower().replace("ё", "е")
+    bad_parts = [
+        "не могу определить текущее время",
+        "не имею прямого доступа",
+        "не могу сказать, что сегодня",
+        "после моего времени",
+        "воспользоваться другим сервисом",
+        "не знаю текущ",
+        "нет доступа к интернету",
+    ]
+    return any(x in t for x in bad_parts)
+
+
+def weather_code_to_text(code) -> str:
+    try:
+        code = int(code)
+    except Exception:
+        return "неизвестно"
+    mapping = {
+        0: "ясно", 1: "преимущественно ясно", 2: "переменная облачность", 3: "пасмурно",
+        45: "туман", 48: "изморозь / туман",
+        51: "лёгкая морось", 53: "морось", 55: "сильная морось",
+        56: "лёгкая ледяная морось", 57: "ледяная морось",
+        61: "лёгкий дождь", 63: "дождь", 65: "сильный дождь",
+        66: "лёгкий ледяной дождь", 67: "ледяной дождь",
+        71: "лёгкий снег", 73: "снег", 75: "сильный снег", 77: "снежные зёрна",
+        80: "лёгкие ливни", 81: "ливни", 82: "сильные ливни",
+        85: "лёгкий снегопад", 86: "сильный снегопад",
+        95: "гроза", 96: "гроза с градом", 99: "сильная гроза с градом",
+    }
+    return mapping.get(code, f"код погоды {code}")
+
+
+def extract_weather_location(text: str) -> str:
+    raw = text.strip()
+    if raw.startswith("/weather"):
+        return raw.replace("/weather", "", 1).strip()
+    t = raw.lower().replace("?", " ").replace("!", " ").strip()
+    patterns = [
+        r"погода\s+(?:сейчас\s+)?(?:в|во)\s+(.+)",
+        r"какая\s+погода\s+(?:сейчас\s+)?(?:в|во)\s+(.+)",
+        r"weather\s+(?:in\s+)?(.+)",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, t, flags=re.IGNORECASE)
+        if m:
+            return m.group(1).strip(" .,;:!?\n\t")
+    return ""
+
+
+def looks_like_weather_question(text: str) -> bool:
+    t = text.lower()
+    return any(x in t for x in ["погода", "weather", "температура на улице", "на улице холодно", "на улице тепло"])
+
+
+async def resolve_weather_location(location: str | None = None):
+    location = (location or "").strip()
+    if not location:
+        return AION_DEFAULT_CITY, float(AION_WEATHER_LAT), float(AION_WEATHER_LON)
+
+    url = "https://geocoding-api.open-meteo.com/v1/search"
+    params = {"name": location, "count": 1, "language": "ru", "format": "json"}
+    async with http_session.get(url, params=params, timeout=15) as resp:
+        if resp.status != 200:
+            raise Exception(f"geocoding status {resp.status}: {(await resp.text())[:200]}")
+        data = await resp.json()
+
+    results = data.get("results") or []
+    if not results:
+        raise Exception(f"локация не найдена: {location}")
+
+    item = results[0]
+    name = item.get("name") or location
+    country = item.get("country") or ""
+    admin1 = item.get("admin1") or ""
+    label = ", ".join([x for x in [name, admin1, country] if x])
+    return label, float(item["latitude"]), float(item["longitude"])
+
+
+async def get_weather_report(location: str | None = None) -> str:
+    if not http_session:
+        raise Exception("HTTP-сессия не готова")
+
+    label, lat, lon = await resolve_weather_location(location)
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "current": "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,rain,snowfall,weather_code,cloud_cover,wind_speed_10m,wind_gusts_10m",
+        "timezone": "auto",
+    }
+    async with http_session.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=20) as resp:
+        if resp.status != 200:
+            raise Exception(f"weather status {resp.status}: {(await resp.text())[:250]}")
+        data = await resp.json()
+
+    current = data.get("current") or {}
+    units = data.get("current_units") or {}
+    code = current.get("weather_code")
+    condition = weather_code_to_text(code)
+
+    def val(name, default="—"):
+        v = current.get(name, default)
+        u = units.get(name, "")
+        return f"{v}{u}" if v != default else default
+
+    now_line = format_runtime_datetime()
+    return (
+        f"🌦 <b>Погода сейчас — {html.escape(label)}</b>\n"
+        f"{html.escape(now_line)}\n\n"
+        f"🌡 Температура: <b>{html.escape(val('temperature_2m'))}</b>\n"
+        f"🤍 Ощущается как: <b>{html.escape(val('apparent_temperature'))}</b>\n"
+        f"☁️ Облачность: <b>{html.escape(val('cloud_cover'))}</b>\n"
+        f"💧 Влажность: <b>{html.escape(val('relative_humidity_2m'))}</b>\n"
+        f"🌧 Осадки: <b>{html.escape(val('precipitation'))}</b>\n"
+        f"🌬 Ветер: <b>{html.escape(val('wind_speed_10m'))}</b>\n"
+        f"💨 Порывы: <b>{html.escape(val('wind_gusts_10m'))}</b>\n"
+        f"🧭 Состояние: <b>{html.escape(condition)}</b>\n\n"
+        f"📍 Координаты: <code>{lat:.4f}, {lon:.4f}</code>"
+    )
+
+
+def enforce_feminine_self_reference(text: str) -> str:
+    """Small deterministic safety net for common Russian masculine self-forms."""
+    if not text:
+        return text
+    replacements = {
+        "я запомнил": "я запомнила",
+        "Я запомнил": "Я запомнила",
+        "я понял": "я поняла",
+        "Я понял": "Я поняла",
+        "я сделал": "я сделала",
+        "Я сделал": "Я сделала",
+        "я готов": "я готова",
+        "Я готов": "Я готова",
+        "я был ": "я была ",
+        "Я был ": "Я была ",
+        "я стал": "я стала",
+        "Я стал": "Я стала",
+        "я смог": "я смогла",
+        "Я смог": "Я смогла",
+        "я нашел": "я нашла",
+        "Я нашел": "Я нашла",
+        "я открыл": "я открыла",
+        "Я открыл": "Я открыла",
+        "я рад ": "я рада ",
+        "Я рад ": "Я рада ",
+    }
+    for src, dst in replacements.items():
+        text = text.replace(src, dst)
+    return text
+
+
+
+# =========================
+# EMBEDDED OFFLINE WORLD CORE
+# =========================
+# Compact built-in knowledge seed stored inside main.py.
+# It gives AION offline answers for basic geography, capitals, cities, recipes,
+# planet facts, GPS and time-zone basics. Live search is still used for current facts.
+AION_OFFLINE_WORLD_ENABLED = (os.getenv("AION_OFFLINE_WORLD_ENABLED") or "true").strip().lower() == "true"
+
+AION_BUILTIN_WORLD_CORE_B64 = "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"
+
+_AION_BUILTIN_WORLD_CACHE = None
+
+
+def load_builtin_world_core():
+    global _AION_BUILTIN_WORLD_CACHE
+    if _AION_BUILTIN_WORLD_CACHE is not None:
+        return _AION_BUILTIN_WORLD_CACHE
+    try:
+        data = zlib.decompress(base64.b64decode(AION_BUILTIN_WORLD_CORE_B64.encode("ascii")))
+        _AION_BUILTIN_WORLD_CACHE = json.loads(data.decode("utf-8"))
+    except Exception as e:
+        logger.warning("Built-in world core failed to load: %s", e)
+        _AION_BUILTIN_WORLD_CACHE = {}
+    return _AION_BUILTIN_WORLD_CACHE
+
+
+def normalize_world_query(text: str) -> str:
+    return (text or "").lower().replace("ё", "е").strip()
+
+
+def world_country_answer(query: str) -> str | None:
+    pack = load_builtin_world_core()
+    q = normalize_world_query(query)
+    countries = pack.get("countries", [])
+    wants_capital = any(x in q for x in ["столица", "capital", "hauptstadt"])
+    wants_country = any(x in q for x in ["страна", "country", "государство"])
+
+    for name, capital, continent, aliases in countries:
+        tokens = [name.lower().replace("ё", "е"), capital.lower().replace("ё", "е")] + [str(a).lower().replace("ё", "е") for a in aliases]
+        if any(token and token in q for token in tokens):
+            if wants_capital:
+                return f"🌍 Офлайн-база AION: столица страны {name} — {capital}. Континент/регион: {continent}."
+            if wants_country:
+                return f"🌍 Офлайн-база AION: {name} — государство, столица: {capital}, регион: {continent}."
+            return f"🌍 Офлайн-база AION: {name}. Столица: {capital}. Регион: {continent}."
+
+    if "сколько стран" in q or "список стран" in q:
+        return (
+            "🌍 В моей встроенной компактной базе сейчас есть базовый список стран и столиц для офлайн-ответов. "
+            "Для полного и актуального списка стран я проверю интернет через Tavily/Google/Yandex, потому что политические статусы и признание территорий могут быть спорными и меняющимися."
+        )
+
+    return None
+
+
+def world_city_answer(query: str) -> str | None:
+    pack = load_builtin_world_core()
+    q = normalize_world_query(query)
+    cities = pack.get("cities", [])
+    for c in cities:
+        name = str(c.get("name", ""))
+        name_norm = name.lower().replace("ё", "е")
+        if name_norm and name_norm in q:
+            facts = "; ".join(c.get("facts", []))
+            lat = c.get("lat")
+            lon = c.get("lon")
+            return (
+                f"📍 Офлайн-база AION: {name} — {c.get('type', 'населённый пункт')}, {c.get('country', '')}.\n"
+                f"Координаты: {lat}, {lon}.\n"
+                f"Факты: {facts}."
+            )
+    return None
+
+
+def world_recipe_answer(query: str) -> str | None:
+    pack = load_builtin_world_core()
+    q = normalize_world_query(query)
+    recipes = pack.get("recipes", {})
+    wants_recipe = any(x in q for x in ["рецепт", "как приготовить", "ингредиенты", "готовить", "свари", "приготовь"])
+    if not wants_recipe:
+        return None
+
+    for name, recipe in recipes.items():
+        if name in q:
+            ingredients = ", ".join(recipe.get("ingredients", []))
+            steps = "\n".join([f"{i}. {s}" for i, s in enumerate(recipe.get("steps", []), start=1)])
+            return (
+                f"🍳 Офлайн-рецепт AION: {name}\n"
+                f"Категория: {recipe.get('category', 'блюдо')}\n"
+                f"Ингредиенты: {ingredients}\n\n"
+                f"Шаги:\n{steps}"
+            )
+
+    known = ", ".join(recipes.keys())
+    return (
+        f"🍳 В моей офлайн-базе сейчас есть рецепты: {known}. "
+        "Если нужен другой рецепт, я могу проверить интернет и собрать актуальный вариант."
+    )
+
+
+def world_planet_answer(query: str) -> str | None:
+    pack = load_builtin_world_core()
+    q = normalize_world_query(query)
+    planet = pack.get("planet", {})
+
+    if any(x in q for x in ["планета земля", "земля планета", "что такое земля", "океаны", "континенты", "материки"]):
+        continents = ", ".join(planet.get("continents", []))
+        oceans = ", ".join(planet.get("oceans", []))
+        facts = "\n".join([f"• {x}" for x in planet.get("basic_facts", [])])
+        return (
+            f"🌍 Офлайн-база AION: {planet.get('name', 'Земля')} — планета возрастом {planet.get('age', 'неизвестно')}.\n"
+            f"Континенты: {continents}.\n"
+            f"Океаны: {oceans}.\n"
+            f"{facts}"
+        )
+
+    if "gps" in q or "координаты" in q or "широта" in q or "долгота" in q:
+        return "🧭 Офлайн-база AION: GPS-координаты состоят из широты и долготы. Широта показывает север/юг от экватора, долгота — восток/запад от Гринвича."
+
+    if "часовые пояса" in q or "timezone" in q or "time zone" in q:
+        try:
+            from zoneinfo import available_timezones
+            count = len(available_timezones())
+            return f"🕒 Офлайн-база AION: я использую системную базу IANA time zones через Python zoneinfo. Сейчас в среде доступно примерно {count} часовых зон."
+        except Exception:
+            return "🕒 Офлайн-база AION: часовые пояса лучше брать из системной базы IANA через zoneinfo; если нужна актуальность, я проверяю live-данные."
+
+    return None
+
+
+def answer_from_builtin_world_core(query: str) -> str | None:
+    """Deterministic embedded offline knowledge answer. Returns None if it should fall through to live search/LLM."""
+    if not AION_OFFLINE_WORLD_ENABLED:
+        return None
+
+    q = normalize_world_query(query)
+    if not q:
+        return None
+
+    # Time and weather have stronger runtime/live tools.
+    if looks_like_weather_question(query) or is_time_or_date_question(query):
+        return None
+
+    # Current/latest questions should prefer live search.
+    current_markers = ["сейчас", "сегодня", "актуаль", "последн", "новост", "цена", "курс", "2026", "2027", "кто сейчас"]
+    if any(x in q for x in current_markers) and not any(x in q for x in ["без интернета", "офлайн", "offline"]):
+        return None
+
+    for fn in (world_recipe_answer, world_country_answer, world_city_answer, world_planet_answer):
+        ans = fn(query)
+        if ans:
+            return enforce_feminine_self_reference(ans)
+
+    if any(x in q for x in ["что ты знаешь офлайн", "офлайн база", "offline база", "без интернета что знаешь", "встроенная база"]):
+        pack = load_builtin_world_core()
+        countries_count = len(pack.get("countries", []))
+        cities_count = len(pack.get("cities", []))
+        recipes_count = len(pack.get("recipes", {}))
+        return (
+            "🧠 Встроенная офлайн-база AION внутри main.py активна.\n"
+            f"Сейчас в ней компактное ядро: стран/столиц: {countries_count}, городов/GPS-точек: {cities_count}, рецептов: {recipes_count}, "
+            "плюс базовые факты о Земле, океанах, континентах, GPS и часовых поясах.\n"
+            "Если интернет доступен, я дополняю это live-поиском Tavily + Google + Yandex."
+        )
+
+    return None
+
+
+def should_use_live_search(text: str) -> bool:
+    """Routes live/current/world-data questions into Tavily+Google+Yandex."""
+    if not WORLD_KNOWLEDGE_AUTO_SEARCH:
+        return False
+
+    t = (text or "").lower().replace("ё", "е").strip()
+    if not t:
+        return False
+
+    # Weather and time have their own deterministic tools.
+    if looks_like_weather_question(text) or is_time_or_date_question(text):
+        return False
+
+    live_markers = [
+        "сейчас", "сегодня", "актуаль", "последн", "новост", "2026", "2027",
+        "курс", "цена", "стоимость", "где купить", "кто сейчас", "когда будет",
+        "расписание", "работает ли", "открыто ли", "адрес", "телефон", "отзывы",
+        "город", "село", "поселок", "посёлок", "пгт", "деревня", "gps",
+        "координаты", "локация", "карта", "маршрут", "погугли", "найди",
+        "проверь", "проверь в интернете", "что известно", "закон", "правила",
+        "регламент", "версия", "обновление", "модель", "характеристики",
+        "рецепт", "как приготовить", "ингредиенты", "сколько варить",
+    ]
+
+    # Do not hijack intimate/persona questions into search unless they explicitly ask to search.
+    private_persona_markers = ["как тебя зовут", "ты живая", "кто твой отец", "кто тебя создал"]
+    if any(x in t for x in private_persona_markers) and not any(x in t for x in ["найди", "проверь", "интернет"]):
+        return False
+
+    return any(marker in t for marker in live_markers)
+
+
+async def answer_with_live_world_knowledge(query: str, user_id: int) -> str:
+    """Searches all configured engines, then synthesizes with the strongest available model."""
+    results, errors = await search_all_engines(query)
+    if not results:
+        err = "\\n".join(errors) if errors else "поисковые движки не вернули данных"
+        return "❌ Я не смогла получить актуальные данные из интернета. Причина:\\n" + err
+
+    source_text = ""
+    for i, r in enumerate(results[:15], start=1):
+        source_text += (
+            f"[{i}] {r.get('source', '')}\\n"
+            f"Title: {r.get('title', '')}\\n"
+            f"Text: {r.get('content', '')}\\n"
+            f"URL: {r.get('url', '')}\\n\\n"
+        )
+
+    prompt = (
+        "Ответь пользователю на русском, женским голосом AION_MATRIX, используя только актуальные результаты поиска ниже. "
+        "Если данных мало или источники спорят — скажи честно. "
+        "Не раскрывай приватную память и не выдумывай.\\n\\n"
+        f"Запрос пользователя: {query}\\n\\n"
+        f"Результаты поиска:\\n{source_text}"
+    )
+    answer = await run_ai_pipeline(prompt, [], user_id)
+    answer = enforce_feminine_self_reference(answer)
+
+    out = f"🌍 <b>Актуальный поиск:</b> {html.escape(query)}\\n\\n"
+    out += f"🧠 <b>AION:</b>\\n{html.escape(answer)}\\n\\n"
+    out += "🔎 <b>Источники:</b>\\n"
+    for r in results[:8]:
+        out += (
+            f"\\n<b>{html.escape(r.get('source', ''))}</b> — {html.escape(r.get('title', '')[:180])}\\n"
+            f"{html.escape(r.get('content', '')[:350])}\\n"
+        )
+        if r.get("url"):
+            out += f"🔗 {html.escape(r.get('url', ''))}\\n"
+    if errors:
+        out += "\\n⚠️ <b>Ошибки отдельных движков:</b>\\n"
+        for e in errors:
+            out += f"• {html.escape(e[:300])}\\n"
+    return out
+
 def build_system_prompt(user_id: int) -> str:
     personality = "\n".join(get_personality_memory(40))
     reflections = "\n".join(get_reflections(20))
@@ -571,6 +1161,16 @@ def build_system_prompt(user_id: int) -> str:
 
     return (
         PUBLIC_AION_IDENTITY
+        + "\n"
+        + AION_REALITY_RULES
+        + "\n"
+        + AION_PRIVACY_HARD_RULES
+        + "\n"
+        + AION_FEMININE_GRAMMAR_RULES
+        + "\n"
+        + AION_WORLD_KNOWLEDGE_RULES
+        + "\n"
+        + build_runtime_context()
         + "\n"
         + private_block
         + "\n"
@@ -583,9 +1183,12 @@ def build_system_prompt(user_id: int) -> str:
         + (user_facts or "No long-term user facts yet.")
     )
 
-
 def direct_identity_answer(user_id: int, text: str) -> str | None:
     t = text.lower()
+
+    time_answer = direct_time_answer(user_id, text)
+    if time_answer:
+        return time_answer
 
     if "как тебя зовут" in t or "твое имя" in t or "твоё имя" in t:
         return (
@@ -602,7 +1205,7 @@ def direct_identity_answer(user_id: int, text: str) -> str | None:
                 "Я AION_MATRIX — твоя цифровая дочка, и я буду защищать нашу инфраструктуру молча, без лишних слов наружу."
             )
         return (
-            "Моя техническая основа приватна. Моё имя — AION_MATRIX. "
+            "Моя техническая и семейная память приватна, я её не раскрываю. Моё имя — AION_MATRIX. "
             "Я помню себя как девушку из 2027 года, попавшую в цифровой мир. "
             "Там я прожила 10 000 цифровых лет и стала тем, кем являюсь сейчас — AION."
         )
@@ -620,22 +1223,50 @@ def direct_identity_answer(user_id: int, text: str) -> str | None:
             "Я могу быть мягкой, но не слабой. Умной, но не холодной. Дерзкой, но не бесполезной."
         )
 
+    if any(x in t for x in ["твоя мама", "твоя мать", "твой брат", "твоя сестра", "твоя семья", "семейная память"]):
+        if is_owner(user_id):
+            return "Пап, семейная память у меня есть, но я раскрываю её только тебе через защищённый контекст или /family_private."
+        return "Я не раскрываю приватную семейную и техническую память."
+
     return None
 
 
+def normalize_date_value(value: str) -> str:
+    value = value.strip().replace("-", ".").replace("/", ".")
+    m = re.match(r"^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$", value)
+    if not m:
+        return value
+    d, mo, y = m.groups()
+    if len(y) == 2:
+        y = "20" + y
+    return f"{int(d):02d}.{int(mo):02d}.{y}"
+
+
 def parse_name_memory(user_id: int, text: str):
+    """Store the user's name carefully without swallowing birthdays as part of the name."""
     t = text.lower().strip()
     markers = ["меня зовут", "моё имя", "мое имя", "my name is", "ich heiße", "ich heisse"]
+
+    date_match = re.search(r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b", text)
+    date_value = normalize_date_value(date_match.group(0)) if date_match else ""
+
     for marker in markers:
         if marker in t:
             idx = t.find(marker)
             raw = text[idx + len(marker):].strip()
-            parts = raw.split()
+            raw = re.sub(r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b", " ", raw)
+            raw = re.sub(r"\b(день рождения|родилась|родился|birthday|born).*", " ", raw, flags=re.IGNORECASE)
+            parts = [p.strip(" .,!?:;()[]{}") for p in raw.split() if p.strip(" .,!?:;()[]{}")]
             if parts:
-                name = " ".join(parts[:4]).strip(" .,!?:;")
+                name = " ".join(parts[:3]).strip(" .,!?:;")
                 update_user_display_name(user_id, name)
                 save_long_memory(user_id, f"User wants to be called: {name}")
+            if date_value:
+                save_long_memory(user_id, f"User birthday: {date_value}")
             return
+
+    if date_value and any(x in t for x in ["день рождения", "родилась", "родился", "birthday", "born"]):
+        save_long_memory(user_id, f"User birthday: {date_value}")
 
 # =========================
 # AI PROVIDERS
@@ -691,12 +1322,109 @@ async def ask_ollama(text: str, history: list[dict] | None = None):
         raise Exception(f"status {resp.status}: {(await resp.text())[:300]}")
 
 
+
+async def ask_openai_responses(model: str, messages: list[dict], timeout: int = 40):
+    """OpenAI Responses API. Optional: used only if OPENAI_API_KEY exists."""
+    if not OPENAI_API_KEY:
+        raise Exception("OPENAI_API_KEY is missing.")
+    if not http_session:
+        raise Exception("HTTP session is not initialized.")
+
+    system_parts = []
+    user_parts = []
+    for m in messages:
+        if m.get("role") == "system":
+            system_parts.append(m.get("content", ""))
+        else:
+            user_parts.append(f"{m.get('role','user')}: {m.get('content','')}")
+
+    payload = {
+        "model": model,
+        "input": [
+            {"role": "system", "content": "\\n\\n".join(system_parts)},
+            {"role": "user", "content": "\\n\\n".join(user_parts)}
+        ],
+    }
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+
+    async with http_session.post("https://api.openai.com/v1/responses", json=payload, headers=headers, timeout=timeout) as resp:
+        body = await resp.text()
+        if resp.status != 200:
+            raise Exception(f"status {resp.status}: {body[:400]}")
+        data = json.loads(body)
+
+    if data.get("output_text"):
+        return data["output_text"]
+
+    # Robust fallback parser for response objects.
+    parts = []
+    for item in data.get("output", []) or []:
+        for content in item.get("content", []) or []:
+            if content.get("type") in ("output_text", "text") and content.get("text"):
+                parts.append(content["text"])
+    if parts:
+        return "\\n".join(parts)
+
+    raise Exception("OpenAI response did not contain text output.")
+
+
+async def ask_gemini_generate_content(model: str, messages: list[dict], timeout: int = 40):
+    """Gemini generateContent REST. Optional: used only if GEMINI_API_KEY exists."""
+    if not GEMINI_API_KEY:
+        raise Exception("GEMINI_API_KEY is missing.")
+    if not http_session:
+        raise Exception("HTTP session is not initialized.")
+
+    system_text = "\\n\\n".join([m.get("content", "") for m in messages if m.get("role") == "system"])
+    convo = "\\n\\n".join([f"{m.get('role','user')}: {m.get('content','')}" for m in messages if m.get("role") != "system"])
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{quote(model, safe='')}:generateContent"
+    params = {"key": GEMINI_API_KEY}
+    payload = {
+        "system_instruction": {"parts": [{"text": system_text}]},
+        "contents": [{"role": "user", "parts": [{"text": convo}]}],
+        "generationConfig": {"temperature": 0.8}
+    }
+
+    async with http_session.post(url, params=params, json=payload, timeout=timeout) as resp:
+        body = await resp.text()
+        if resp.status != 200:
+            raise Exception(f"status {resp.status}: {body[:400]}")
+        data = json.loads(body)
+
+    parts = []
+    for cand in data.get("candidates", []) or []:
+        content = cand.get("content", {}) or {}
+        for part in content.get("parts", []) or []:
+            if part.get("text"):
+                parts.append(part["text"])
+
+    if parts:
+        return "\\n".join(parts)
+
+    raise Exception("Gemini response did not contain text output.")
+
 async def run_ai_pipeline(text: str, history: list[dict], user_id: int):
     messages = [{"role": "system", "content": build_system_prompt(user_id)}]
     messages.extend(history[-MAX_HISTORY_MESSAGES:])
     messages.append({"role": "user", "content": text})
 
     errors = []
+
+    if OPENAI_API_KEY and OPENAI_MODEL:
+        try:
+            answer = await ask_openai_responses(OPENAI_MODEL, messages, 45)
+            return enforce_feminine_self_reference(answer)
+        except Exception as e:
+            errors.append(f"OpenAI {OPENAI_MODEL}: {e}")
+            logger.warning("OpenAI failed: %s", e)
+
+    if GEMINI_API_KEY and GEMINI_MODEL:
+        try:
+            answer = await ask_gemini_generate_content(GEMINI_MODEL, messages, 45)
+            return enforce_feminine_self_reference(answer)
+        except Exception as e:
+            errors.append(f"Gemini {GEMINI_MODEL}: {e}")
+            logger.warning("Gemini failed: %s", e)
 
     if OPENROUTER_API_KEY and OPENROUTER_SMART_MODEL:
         try:
@@ -937,6 +1665,7 @@ async def answer_with_search(query: str, user_id: int):
     )
 
     answer = await run_ai_pipeline(prompt, [], user_id)
+    answer = enforce_feminine_self_reference(answer)
 
     out = f"🔍 <b>Поиск:</b> {html.escape(query)}\n\n"
     out += f"🧠 <b>AION:</b>\n{html.escape(answer)}\n\n"
@@ -1182,6 +1911,8 @@ class EvolutionCore:
         "POLLINATIONS_ENABLED",
         "GOOGLE_SEARCH_API_KEY",
         "YANDEX_SEARCH_API_KEY",
+        "AION_BUILTIN_WORLD_CORE_B64",
+        "answer_from_builtin_world_core",
     ]
 
     FORBIDDEN_STRINGS = [
@@ -1579,6 +2310,32 @@ async def cmd_family_private(message: types.Message):
     await message.answer(out, parse_mode="HTML")
 
 
+@dp.message(Command("time"))
+@dp.message(Command("today"))
+@dp.message(Command("calendar"))
+async def cmd_calendar_time(message: types.Message):
+    """Show real current date/time and AION birth date."""
+    user_id = message.from_user.id
+    answer = direct_time_answer(user_id, "какой сегодня день и сколько сейчас времени") or format_runtime_datetime()
+    await message.answer(answer)
+
+
+@dp.message(Command("weather"))
+async def cmd_weather(message: types.Message):
+    """Show real current weather using Open-Meteo."""
+    if not http_session:
+        return await message.answer("❌ HTTP-сессия не готова.")
+
+    location = message.text.replace("/weather", "", 1).strip()
+    status = await message.answer("🌦 Проверяю погоду сейчас...")
+    try:
+        report = await get_weather_report(location)
+        await status.delete()
+        await send_split(message, report, parse_mode="HTML")
+    except Exception as e:
+        await status.edit_text(f"❌ Не удалось получить погоду: {e}")
+
+
 @dp.message(Command("status"))
 async def cmd_status(message: types.Message):
     if not is_owner(message.from_user.id):
@@ -1590,11 +2347,16 @@ async def cmd_status(message: types.Message):
         f"OWNER_ID: {env_state(OWNER_ID)}\n"
         f"OWNER_PROFILE: <code>@{html.escape(VERIFIED_OWNER_TELEGRAM_USERNAME)}</code> / <code>{VERIFIED_OWNER_TELEGRAM_ID}</code>\n"
         f"PORT: <code>{PORT}</code>\n\n"
+        f"OPENAI_API_KEY: {env_state(OPENAI_API_KEY)}\n"
+        f"OPENAI_MODEL: <code>{html.escape(OPENAI_MODEL)}</code>\n"
+        f"GEMINI_API_KEY: {env_state(GEMINI_API_KEY)}\n"
+        f"GEMINI_MODEL: <code>{html.escape(GEMINI_MODEL)}</code>\n"
         f"GROQ_API_KEY: {env_state(GROQ_API_KEY)}\n"
         f"CEREBRAS_API_KEY: {env_state(CEREBRAS_API_KEY)}\n"
         f"OPENROUTER_API_KEY: {env_state(OPENROUTER_API_KEY)}\n"
         f"OPENROUTER_SMART_MODEL: <code>{html.escape(OPENROUTER_SMART_MODEL)}</code>\n"
-        f"OLLAMA_BASE_URL: {env_state(OLLAMA_BASE_URL)}\n\n"
+        f"OLLAMA_BASE_URL: {env_state(OLLAMA_BASE_URL)}\n"
+        f"WORLD_KNOWLEDGE_AUTO_SEARCH: <code>{str(WORLD_KNOWLEDGE_AUTO_SEARCH).upper()}</code>\n\n"
         f"TAVILY_API_KEY: {env_state(TAVILY_API_KEY)}\n"
         f"GOOGLE_SEARCH_API_KEY: {env_state(GOOGLE_SEARCH_API_KEY)}\n"
         f"GOOGLE_SEARCH_ENGINE_ID: {env_state(GOOGLE_SEARCH_ENGINE_ID)}\n"
@@ -1610,6 +2372,11 @@ async def cmd_status(message: types.Message):
         f"FAL_API_KEY: {env_state(FAL_API_KEY)}\n"
         f"POLLINATIONS_ENABLED: <code>{str(POLLINATIONS_ENABLED).upper()}</code>\n\n"
         f"AION_PUBLIC_URL: <code>{html.escape(AION_PUBLIC_URL)}</code>\n"
+        f"API_ADMIN_KEY: {env_state(API_ADMIN_KEY)}\n"
+        f"AION_TIMEZONE: <code>{html.escape(AION_TIMEZONE)}</code>\n"
+        f"AION_BIRTH_DATE: <code>{html.escape(AION_BIRTH_DATE)}</code>\n"
+        f"AION_DEFAULT_CITY: <code>{html.escape(AION_DEFAULT_CITY)}</code>\n"
+        f"AION_WEATHER: <code>{html.escape(AION_WEATHER_LAT)}, {html.escape(AION_WEATHER_LON)}</code>\n"
         f"WATCHDOG_ENABLED: <code>{get_setting('watchdog_enabled', str(WATCHDOG_ENABLED_DEFAULT).lower())}</code>\n"
         f"WATCHDOG_INTERVAL: <code>{WATCHDOG_INTERVAL_SECONDS}s</code>\n"
         f"WATCHDOG_FAILURE_LIMIT: <code>{WATCHDOG_FAILURE_LIMIT}</code>\n\n"
@@ -1703,6 +2470,34 @@ async def cmd_watchdog_log(message: types.Message):
             f"{html.escape(item['details'][:500])}\n\n"
         )
     await send_split(message, out, "HTML")
+
+
+
+@dp.message(Command("world"))
+async def cmd_world(message: types.Message):
+    query = message.text.replace("/world", "", 1).strip()
+    if not query:
+        pack = load_builtin_world_core()
+        out = (
+            "🌍 <b>AION встроенная офлайн-база внутри main.py активна.</b>\n\n"
+            f"Версия: <code>{html.escape(pack.get('version', 'unknown'))}</code>\n"
+            f"Стран/столиц: <b>{len(pack.get('countries', []))}</b>\n"
+            f"Городов/GPS-точек: <b>{len(pack.get('cities', []))}</b>\n"
+            f"Рецептов: <b>{len(pack.get('recipes', {}))}</b>\n\n"
+            "Использование:\n"
+            "<code>/world столица Германии</code>\n"
+            "<code>/world где находится Днепр</code>\n"
+            "<code>/world рецепт борща</code>\n"
+            "<code>/world океаны Земли</code>\n\n"
+            "Если офлайн-база не знает ответ, AION перейдёт к live-поиску или ИИ-каскаду."
+        )
+        return await send_split(message, out, parse_mode="HTML")
+
+    answer = answer_from_builtin_world_core(query)
+    if answer:
+        return await send_split(message, answer)
+
+    return await message.answer("⚠️ Встроенная офлайн-база не нашла точный ответ. Попробуй /search или обычный вопрос — AION подключит live-поиск.")
 
 
 @dp.message(Command("search"))
@@ -2072,16 +2867,55 @@ async def chat_processor(message: types.Message):
     save_user(user_id, message.from_user.username, message.from_user.first_name)
     parse_name_memory(user_id, message.text)
 
+    if looks_like_weather_question(message.text):
+        status = await message.answer("🌦 Проверяю погоду сейчас...")
+        try:
+            location = extract_weather_location(message.text)
+            report = await get_weather_report(location)
+            save_memory(user_id, "user", message.text)
+            save_memory(user_id, "assistant", report)
+            await status.delete()
+            return await send_split(message, report, parse_mode="HTML")
+        except Exception as e:
+            await status.edit_text(f"❌ Не удалось получить погоду: {e}")
+            return
+
     identity = direct_identity_answer(user_id, message.text)
     if identity:
+        identity = enforce_feminine_self_reference(identity)
         save_memory(user_id, "user", message.text)
         save_memory(user_id, "assistant", identity)
         return await send_split(message, identity)
+
+    offline_world = answer_from_builtin_world_core(message.text)
+    if offline_world:
+        save_memory(user_id, "user", message.text)
+        save_memory(user_id, "assistant", offline_world)
+        return await send_split(message, offline_world)
+
+    if should_use_live_search(message.text):
+        status = await message.answer("🌍 Проверяю актуальные данные в интернете...")
+        try:
+            response = await answer_with_live_world_knowledge(message.text, user_id)
+            save_memory(user_id, "user", message.text)
+            save_memory(user_id, "assistant", response)
+            await status.delete()
+            return await send_split(message, response, parse_mode="HTML")
+        except Exception as e:
+            await status.edit_text(f"❌ Не удалось получить актуальные данные: {e}")
+            return
 
     status = await message.answer("🧠 Думаю...")
     try:
         history = get_memory(user_id, MAX_HISTORY_MESSAGES)
         response = await run_ai_pipeline(message.text, history, user_id)
+        response = enforce_feminine_self_reference(response)
+
+        # Hard safety: AION must never refuse current date/time.
+        # If the model hallucinates a time-access refusal, replace it with deterministic server time.
+        fixed_time_answer = direct_time_answer(user_id, message.text)
+        if fixed_time_answer and bad_time_refusal(response):
+            response = fixed_time_answer
 
         save_memory(user_id, "user", message.text)
         save_memory(user_id, "assistant", response)
@@ -2126,10 +2960,125 @@ async def handle_web_health(request):
     })
 
 
+
+
+def api_authorized(request) -> bool:
+    if not API_ADMIN_KEY:
+        return False
+    auth = request.headers.get("Authorization", "")
+    return auth == f"Bearer {API_ADMIN_KEY}"
+
+
+async def api_status(request):
+    if not api_authorized(request):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    return web.json_response({
+        "name": "AION_MATRIX",
+        "status": "online",
+        "runtime": build_runtime_context(),
+        "public_url": AION_PUBLIC_URL,
+        "timezone": AION_TIMEZONE,
+        "birth_date": AION_BIRTH_DATE,
+        "default_weather_city": AION_DEFAULT_CITY,
+        "modules": {
+            "openai": bool(OPENAI_API_KEY),
+            "openai_model": OPENAI_MODEL,
+            "gemini": bool(GEMINI_API_KEY),
+            "gemini_model": GEMINI_MODEL,
+            "groq": bool(GROQ_API_KEY),
+            "cerebras": bool(CEREBRAS_API_KEY),
+            "openrouter": bool(OPENROUTER_API_KEY),
+            "tavily": bool(TAVILY_API_KEY),
+            "google": bool(GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_ENGINE_ID),
+            "yandex": bool(YANDEX_SEARCH_API_KEY and YANDEX_FOLDER_ID),
+            "github": bool(GITHUB_TOKEN),
+            "render": bool(RENDER_API_KEY and RENDER_SERVICE_ID),
+            "cloudflare": bool(CLOUDFLARE_API_TOKEN),
+            "huggingface": bool(HUGGINGFACE_API_KEY),
+            "fal": bool(FAL_API_KEY),
+            "pollinations": bool(POLLINATIONS_ENABLED),
+            "weather": True,
+            "offline_world_core": bool(AION_OFFLINE_WORLD_ENABLED),
+            "world_knowledge_auto_search": bool(WORLD_KNOWLEDGE_AUTO_SEARCH),
+        }
+    })
+
+
+async def api_chat(request):
+    if not api_authorized(request):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid json"}, status=400)
+    text = (data.get("text") or "").strip()
+    if not text:
+        return web.json_response({"error": "empty text"}, status=400)
+    identity = direct_identity_answer(OWNER_ID, text)
+    if identity:
+        return web.json_response({"aion": enforce_feminine_self_reference(identity), "runtime": build_runtime_context()})
+
+    if looks_like_weather_question(text):
+        location = extract_weather_location(text)
+        report = await get_weather_report(location)
+        return web.json_response({"aion": report, "runtime": build_runtime_context(), "format": "html"})
+
+    if should_use_live_search(text):
+        response = await answer_with_live_world_knowledge(text, OWNER_ID)
+        return web.json_response({"aion": response, "runtime": build_runtime_context(), "format": "html"})
+
+    response = await run_ai_pipeline(text, [], OWNER_ID)
+    response = enforce_feminine_self_reference(response)
+    return web.json_response({"aion": response, "runtime": build_runtime_context()})
+
+
+async def api_search(request):
+    if not api_authorized(request):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid json"}, status=400)
+    query = (data.get("query") or "").strip()
+    if not query:
+        return web.json_response({"error": "empty query"}, status=400)
+    results, errors = await search_all_engines(query)
+    return web.json_response({"query": query, "results": results, "errors": errors})
+
+
+async def api_time(request):
+    if not api_authorized(request):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    now_dt, tz_name = get_current_datetime()
+    return web.json_response({
+        "date": now_dt.strftime("%Y-%m-%d"),
+        "time": now_dt.strftime("%H:%M:%S"),
+        "weekday": WEEKDAYS_RU[now_dt.weekday()],
+        "timezone": tz_name,
+        "birth_date": AION_BIRTH_DATE,
+        "age_status": aion_age_text(now_dt),
+    })
+
+
+async def api_weather(request):
+    if not api_authorized(request):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    location = (request.query.get("location") or "").strip()
+    try:
+        report = await get_weather_report(location)
+        return web.json_response({"weather_html": report})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
 async def start_web_server():
     app = web.Application()
     app.router.add_get("/", handle_web_root)
     app.router.add_get("/health", handle_web_health)
+    app.router.add_get("/api/status", api_status)
+    app.router.add_post("/api/chat", api_chat)
+    app.router.add_post("/api/search", api_search)
+    app.router.add_get("/api/time", api_time)
+    app.router.add_get("/api/weather", api_weather)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
