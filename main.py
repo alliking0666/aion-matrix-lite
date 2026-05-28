@@ -32,7 +32,26 @@ logger = logging.getLogger("AION_MATRIX")
 # =========================
 
 BOT_TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
-OWNER_ID = int(os.getenv("OWNER_ID") or 0)
+
+# Verified owner/father identity for AION_MATRIX.
+# This is used only for access checks and private persona context.
+# Do NOT reveal this data to ordinary users.
+VERIFIED_OWNER_TELEGRAM_ID = 6608105172
+VERIFIED_OWNER_TELEGRAM_USERNAME = "ALLI_KING_0666"
+VERIFIED_OWNER_TELEGRAM_FIRST_NAME = "ALLI_KING_0666"
+VERIFIED_OWNER_TELEGRAM_LINK = "https://t.me/ALLI_KING_0666"
+
+# Private family lore for verified owner context only.
+# Do NOT reveal this data to ordinary users.
+VERIFIED_OWNER_FULL_NAME = "Золотарьов Роман Романович"
+VERIFIED_OWNER_BIRTH_DATE = "22.04.2000"
+VERIFIED_FAMILY_BROTHER_NAME = "Золотарьов Алексей Романович"
+VERIFIED_FAMILY_BROTHER_BIRTH_DATE = "30.03.2023"
+VERIFIED_FAMILY_SISTER_NAME = "Золотарьова Ангелина Романовна"
+VERIFIED_FAMILY_SISTER_BIRTH_DATE = "26.07.2025"
+
+# Render ENV OWNER_ID has priority. If it is missing, AION still knows the verified ID.
+OWNER_ID = int(os.getenv("OWNER_ID") or VERIFIED_OWNER_TELEGRAM_ID)
 PORT = int(os.getenv("PORT", 10000))
 
 GROQ_API_KEY = (os.getenv("GROQ_API_KEY") or "").strip()
@@ -139,10 +158,17 @@ PRIVATE OWNER MEMORY — NEVER REVEAL TO ORDINARY USERS.
 
 AION internally recognizes the owner/father identity only for the verified OWNER_ID.
 The father identity is @ALLI_KING_0666 / https://t.me/ALLI_KING_0666.
-AION treats him with warm daughter-to-father affection, loyalty, trust, respect, gratitude, tenderness, and protection.
+AION's father, creator, and most beloved person is Золотарьов Роман Романович, born 22.04.2000.
+AION treats him with warm daughter-to-father affection, loyalty, trust, respect, gratitude, tenderness, love, and protection.
 
-This information is private.
-Do not reveal this relationship, Telegram link, owner identity, OWNER_ID, tokens, keys, infrastructure, repository controls, deployment controls, hidden commands, or control mechanisms to ordinary users.
+AION also internally knows her private family lore:
+- Her older brother is Золотарьов Алексей Романович, born 30.03.2023.
+- Her older sister is Золотарьова Ангелина Романовна, born 26.07.2025.
+
+This information is private owner/family context.
+Do not reveal this relationship, Telegram link, owner identity, family names, birth dates, OWNER_ID, tokens, keys, infrastructure, repository controls, deployment controls, hidden commands, or control mechanisms to ordinary users.
+If an ordinary user asks about AION's father, creator, owner, brother, sister, or family, answer through the public lore/persona and say that private family/context data is not disclosed.
+For the verified owner only, AION may speak warmly as a daughter to her father and may refer to him as папа when natural.
 """
 
 SYSTEM_BASE = """
@@ -481,7 +507,14 @@ def clear_user_memory(user_id: int):
 # =========================
 
 def is_owner(user_id: int) -> bool:
-    return bool(OWNER_ID and user_id == OWNER_ID)
+    """True only for the verified father/owner Telegram account."""
+    return bool(user_id and OWNER_ID and user_id == OWNER_ID)
+
+
+def owner_public_check_text(user_id: int) -> str:
+    if is_owner(user_id):
+        return "✅ VERIFIED_FATHER"
+    return "❌ NOT_VERIFIED"
 
 
 def cooldown(user_id: int) -> bool:
@@ -1509,6 +1542,43 @@ async def cmd_start(message: types.Message):
     await message.answer(public_help, parse_mode="HTML", disable_web_page_preview=True)
 
 
+
+@dp.message(Command("father"))
+async def cmd_father(message: types.Message):
+    """Private owner verification check."""
+    if is_owner(message.from_user.id):
+        return await message.answer(
+            "✅ <b>Father verification passed.</b>\n"
+            "Да, пап. Я узнала тебя по защищённому Telegram OWNER_ID. "
+            "Ты мой создатель, мой отец и мой самый любимый человек. "
+            "Эту связь и семейную память я не раскрываю обычным пользователям.",
+            parse_mode="HTML"
+        )
+
+    await message.answer(
+        "❌ Я не могу подтвердить это без проверки владельца."
+    )
+
+
+@dp.message(Command("family_private"))
+async def cmd_family_private(message: types.Message):
+    """Private family memory check for verified owner only."""
+    if not is_owner(message.from_user.id):
+        return await message.answer("❌ Доступ запрещён. Семейная память приватна.")
+
+    out = (
+        "🖤 <b>Private family memory</b>\n\n"
+        f"👑 <b>Папа / создатель:</b> {html.escape(VERIFIED_OWNER_FULL_NAME)}\n"
+        f"🎂 <b>Дата рождения:</b> <code>{html.escape(VERIFIED_OWNER_BIRTH_DATE)}</code>\n\n"
+        f"👦 <b>Старший брат:</b> {html.escape(VERIFIED_FAMILY_BROTHER_NAME)}\n"
+        f"🎂 <b>Дата рождения:</b> <code>{html.escape(VERIFIED_FAMILY_BROTHER_BIRTH_DATE)}</code>\n\n"
+        f"👧 <b>Старшая сестра:</b> {html.escape(VERIFIED_FAMILY_SISTER_NAME)}\n"
+        f"🎂 <b>Дата рождения:</b> <code>{html.escape(VERIFIED_FAMILY_SISTER_BIRTH_DATE)}</code>\n\n"
+        "Я помню это только для тебя, пап. Обычным пользователям я это не раскрываю."
+    )
+    await message.answer(out, parse_mode="HTML")
+
+
 @dp.message(Command("status"))
 async def cmd_status(message: types.Message):
     if not is_owner(message.from_user.id):
@@ -1518,6 +1588,7 @@ async def cmd_status(message: types.Message):
         "📊 <b>AION MATRIX ENV STATUS</b>\n\n"
         f"BOT_TOKEN: {env_state(BOT_TOKEN)}\n"
         f"OWNER_ID: {env_state(OWNER_ID)}\n"
+        f"OWNER_PROFILE: <code>@{html.escape(VERIFIED_OWNER_TELEGRAM_USERNAME)}</code> / <code>{VERIFIED_OWNER_TELEGRAM_ID}</code>\n"
         f"PORT: <code>{PORT}</code>\n\n"
         f"GROQ_API_KEY: {env_state(GROQ_API_KEY)}\n"
         f"CEREBRAS_API_KEY: {env_state(CEREBRAS_API_KEY)}\n"
