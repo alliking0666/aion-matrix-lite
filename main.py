@@ -7,6 +7,7 @@ import base64
 import zlib
 import sqlite3
 import asyncio
+import io
 import aiohttp
 import logging
 import re
@@ -109,6 +110,17 @@ CLOUDFLARE_API_TOKEN = (os.getenv("CLOUDFLARE_API_TOKEN") or "").strip()
 HUGGINGFACE_API_KEY = (os.getenv("HUGGINGFACE_API_KEY") or "").strip()
 FAL_API_KEY = (os.getenv("FAL_API_KEY") or "").strip()
 POLLINATIONS_ENABLED = (os.getenv("POLLINATIONS_ENABLED") or "true").strip().lower() == "true"
+
+OPENAI_IMAGE_MODEL = (os.getenv("OPENAI_IMAGE_MODEL") or "gpt-image-2").strip()
+OPENAI_TTS_MODEL = (os.getenv("OPENAI_TTS_MODEL") or "gpt-4o-mini-tts").strip()
+OPENAI_TRANSCRIBE_MODEL = (os.getenv("OPENAI_TRANSCRIBE_MODEL") or "gpt-4o-transcribe").strip()
+AION_VOICE_REPLY_ENABLED = (os.getenv("AION_VOICE_REPLY_ENABLED") or "true").strip().lower() == "true"
+AION_VOICE_LANGUAGE = (os.getenv("AION_VOICE_LANGUAGE") or "ru").strip()
+
+FAL_VIDEO_MODEL = (os.getenv("FAL_VIDEO_MODEL") or "fal-ai/veo3").strip()
+FAL_IMAGE_TO_VIDEO_MODEL = (os.getenv("FAL_IMAGE_TO_VIDEO_MODEL") or "fal-ai/veo3.1/image-to-video").strip()
+FAL_MUSIC_MODEL = (os.getenv("FAL_MUSIC_MODEL") or "fal-ai/stable-audio-25/text-to-audio").strip()
+FAL_SOUND_FX_MODEL = (os.getenv("FAL_SOUND_FX_MODEL") or "fal-ai/stable-audio-25/text-to-audio").strip()
 
 AUTO_EVOLUTION_INTERVAL_SECONDS = int(os.getenv("AUTO_EVOLUTION_INTERVAL_SECONDS") or 21600)
 
@@ -2370,15 +2382,247 @@ async def answer_with_search(query: str, user_id: int):
 # MEDIA
 # =========================
 
+def _pick_url(data):
+    if isinstance(data, str) and data.startswith("http"):
+        return data
+    if isinstance(data, dict):
+        value = data.get("url")
+        if isinstance(value, str) and value.startswith("http"):
+            return value
+
+        for key in ("video", "audio", "image", "file"):
+            found = _pick_url(data.get(key))
+            if found:
+                return found
+
+        images = data.get("images")
+        if isinstance(images, list):
+            for item in images:
+                found = _pick_url(item)
+                if found:
+                    return found
+
+        for value in data.values():
+            found = _pick_url(value)
+            if found:
+                return found
+
+    if isinstance(data, list):
+        for item in data:
+            found = _pick_url(item)
+            if found:
+                return found
+
+    return None
+
+
+async def download_url_bytes(url: str, timeout_seconds: int = 300) -> bytes:
+    if not http_session:
+        raise Exception("HTTP session is not initialized.")
+
+    async with http_session.get(url, timeout=timeout_seconds) as resp:
+        if resp.status >= 400:
+            raise Exception(f"Download error {resp.status}: {(await resp.text())[:500]}")
+        return await resp.read()
+
+
+async def openai_generate_image_bytes(prompt: str) -> bytes:
+    if not OPENAI_API_KEY:
+        raise Exception("OPENAI_API_KEY is missing.")
+
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": OPENAI_IMAGE_MODEL,
+        "prompt": prompt,
+        "size": "1024x1024",
+        "n": 1,
+        "quality": "high",
+    }
+
+    async with http_session.post(
+        "https://api.openai.com/v1/images/generations",
+        headers=headers,
+        json=payload,
+        timeout=180,
+    ) as resp:
+        data = await resp.json(content_type=None)
+        if resp.status >= 400:
+            raise Exception(f"OpenAI image error {resp.status}: {str(data)[:800]}")
+
+        item = data.get("data", [{}])[0]
+        if item.get("b64_json"):
+            return base64.b64decode(item["b64_json"])
+
+        if item.get("url"):
+            return await download_url_bytes(item["url"])
+
+        raise Exception(f"Unknown OpenAI image response: {str(data)[:800]}")
+
+
 async def generate_image(prompt: str):
+    """
+    Returns either:
+    {"type": "bytes", "data": image_bytes}
+    or
+    {"type": "url", "data": image_url}
+    """
+    if OPENAI_API_KEY:
+        return {"type": "bytes", "data": await openai_generate_image_bytes(prompt)}
+
     if not POLLINATIONS_ENABLED:
-        raise Exception("POLLINATIONS_ENABLED=false.")
-    return f"https://image.pollinations.ai/prompt/{quote(prompt)}"
+        raise Exception("OPENAI_API_KEY is missing and POLLINATIONS_ENABLED=false.")
+
+    return {"type": "url", "data": f"https://image.pollinations.ai/prompt/{quote(prompt)}"}
+
+
+async def openai_tts_bytes(text: str) -> bytes:
+    if not OPENAI_API_KEY:
+        raise Exception("OPENAI_API_KEY is missing.")
+
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": OPENAI_TTS_MODEL,
+        "voice": "coral",
+        "input": text[:3500],
+        "instructions": (
+            "Speak naturally in Russian. Warm, intelligent, calm, slightly futuristic. "
+            "Sound like AION_MATRIX: feminine, gentle, confident and clear."
+        ),
+        "response_format": "mp3",
+    }
+
+    async with http_session.post(
+        "https://api.openai.com/v1/audio/speech",
+        headers=headers,
+        json=payload,
+        timeout=180,
+    ) as resp:
+        if resp.status >= 400:
+            raise Exception(f"OpenAI TTS error {resp.status}: {(await resp.text())[:800]}")
+        return await resp.read()
+
+
+async def openai_transcribe_audio_bytes(audio_bytes: bytes, filename: str = "voice.ogg") -> str:
+    if not OPENAI_API_KEY:
+        raise Exception("OPENAI_API_KEY is missing.")
+
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+    form = aiohttp.FormData()
+    form.add_field("model", OPENAI_TRANSCRIBE_MODEL)
+    form.add_field("language", AION_VOICE_LANGUAGE)
+    form.add_field(
+        "file",
+        audio_bytes,
+        filename=filename,
+        content_type="application/octet-stream",
+    )
+
+    async with http_session.post(
+        "https://api.openai.com/v1/audio/transcriptions",
+        headers=headers,
+        data=form,
+        timeout=180,
+    ) as resp:
+        data = await resp.json(content_type=None)
+        if resp.status >= 400:
+            raise Exception(f"OpenAI transcription error {resp.status}: {str(data)[:800]}")
+        return (data.get("text") or "").strip()
+
+
+async def fal_queue_run(model: str, arguments: dict, timeout_seconds: int = 1200) -> dict:
+    if not FAL_API_KEY:
+        raise Exception("FAL_API_KEY is missing.")
+    if not http_session:
+        raise Exception("HTTP session is not initialized.")
+
+    submit_url = f"https://queue.fal.run/{model}"
+    headers = {
+        "Authorization": f"Key {FAL_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    async with http_session.post(submit_url, json=arguments, headers=headers, timeout=30) as resp:
+        data = await resp.json(content_type=None)
+        if resp.status not in (200, 201, 202):
+            raise Exception(f"Fal submit error {resp.status}: {str(data)[:800]}")
+
+    status_url = data.get("status_url")
+    response_url = data.get("response_url")
+
+    if not status_url:
+        return data
+
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        await asyncio.sleep(4)
+        async with http_session.get(status_url, headers=headers, timeout=30) as resp:
+            status_data = await resp.json(content_type=None)
+            if resp.status >= 400:
+                raise Exception(f"Fal status error {resp.status}: {str(status_data)[:800]}")
+
+        state = str(status_data.get("status") or "").upper()
+        if state == "COMPLETED":
+            if response_url:
+                async with http_session.get(response_url, headers=headers, timeout=60) as final:
+                    final_data = await final.json(content_type=None)
+                    if final.status >= 400:
+                        raise Exception(f"Fal response error {final.status}: {str(final_data)[:800]}")
+                    return final_data
+            return status_data
+
+        if state in ("FAILED", "ERROR"):
+            raise Exception(f"Fal generation failed: {str(status_data)[:800]}")
+
+    raise Exception("Fal generation timeout.")
+
+
+async def generate_video(prompt: str) -> str:
+    result = await fal_queue_run(
+        FAL_VIDEO_MODEL,
+        {
+            "prompt": prompt,
+            "aspect_ratio": "16:9",
+            "audio_enabled": True,
+        },
+        timeout_seconds=1200,
+    )
+    url = _pick_url(result)
+    if not url:
+        raise Exception(f"No video URL in Fal response: {str(result)[:800]}")
+    return url
+
+
+async def generate_image_to_video(image_url: str, prompt: str = "") -> str:
+    result = await fal_queue_run(
+        FAL_IMAGE_TO_VIDEO_MODEL,
+        {
+            "image_url": image_url,
+            "prompt": prompt or "Animate this image cinematically with smooth natural motion.",
+        },
+        timeout_seconds=1200,
+    )
+    url = _pick_url(result)
+    if not url:
+        raise Exception(f"No video URL in Fal image-to-video response: {str(result)[:800]}")
+    return url
 
 
 async def generate_music(prompt: str) -> bytes:
+    if FAL_API_KEY:
+        result = await fal_queue_run(FAL_MUSIC_MODEL, {"prompt": prompt}, timeout_seconds=800)
+        url = _pick_url(result)
+        if not url:
+            raise Exception(f"No audio URL in Fal music response: {str(result)[:800]}")
+        return await download_url_bytes(url)
+
     if not HUGGINGFACE_API_KEY:
-        raise Exception("HUGGINGFACE_API_KEY is missing.")
+        raise Exception("FAL_API_KEY and HUGGINGFACE_API_KEY are missing.")
 
     url = "https://api-inference.huggingface.co/models/facebook/musicgen-melody"
     headers = {"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"}
@@ -2398,179 +2642,14 @@ async def generate_music(prompt: str) -> bytes:
         raise Exception(f"HuggingFace status {resp.status}: {(await resp.text())[:300]}")
 
 
-async def generate_video(prompt: str) -> str:
-    if not FAL_API_KEY:
-        raise Exception("FAL_API_KEY is missing.")
-
-    url = "https://queue.fal.run/fal-ai/luma-dream-machine"
-    headers = {
-        "Authorization": f"Key {FAL_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "prompt": prompt,
-        "aspect_ratio": "16:9"
-    }
-
-    async with http_session.post(url, json=payload, headers=headers, timeout=25) as resp:
-        if resp.status not in (200, 201):
-            raise Exception(f"Fal submit status {resp.status}: {(await resp.text())[:300]}")
-        data = await resp.json()
-        status_url = data.get("status_url")
-        response_url = data.get("response_url")
-
-    if not status_url:
-        raise Exception("Fal did not return status_url.")
-
-    for _ in range(60):
-        await asyncio.sleep(4)
-        async with http_session.get(status_url, headers=headers, timeout=20) as resp:
-            if resp.status in (200, 202):
-                data = await resp.json()
-                status = (data.get("status") or "").upper()
-
-                if status == "COMPLETED":
-                    video_url = (data.get("video") or {}).get("url")
-                    if video_url:
-                        return video_url
-
-                    if response_url:
-                        async with http_session.get(response_url, headers=headers, timeout=20) as final:
-                            if final.status == 200:
-                                final_data = await final.json()
-                                video_url = (final_data.get("video") or {}).get("url")
-                                if video_url:
-                                    return video_url
-                            raise Exception(f"Fal final response status {final.status}: {(await final.text())[:300]}")
-
-                    raise Exception("Fal completed, but video URL was not found.")
-
-                if status == "FAILED":
-                    raise Exception(str(data.get("error", "Fal render failed.")))
-            else:
-                raise Exception(f"Fal status check error {resp.status}: {(await resp.text())[:300]}")
-
-    raise Exception("Video generation timeout.")
-
-# =========================
-# DEVOPS APIs
-# =========================
-
-async def github_repo_info(repo: str):
-    headers = {"Accept": "application/vnd.github+json"}
-    if GITHUB_TOKEN:
-        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
-
-    async with http_session.get(f"https://api.github.com/repos/{repo}", headers=headers, timeout=20) as resp:
-        if resp.status != 200:
-            raise Exception(f"GitHub status {resp.status}: {(await resp.text())[:250]}")
-        return await resp.json()
+async def generate_sfx(prompt: str) -> bytes:
+    result = await fal_queue_run(FAL_SOUND_FX_MODEL, {"prompt": prompt}, timeout_seconds=800)
+    url = _pick_url(result)
+    if not url:
+        raise Exception(f"No audio URL in Fal SFX response: {str(result)[:800]}")
+    return await download_url_bytes(url)
 
 
-async def github_get_file(file_path: str = "main.py"):
-    if not GITHUB_TOKEN:
-        raise Exception("GITHUB_TOKEN is missing.")
-
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{file_path}"
-    headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json"
-    }
-
-    async with http_session.get(url, headers=headers, timeout=20) as resp:
-        if resp.status != 200:
-            raise Exception(f"GitHub GET status {resp.status}: {(await resp.text())[:250]}")
-        data = await resp.json()
-
-    content = base64.b64decode(data["content"]).decode("utf-8", errors="ignore")
-    return content, data["sha"]
-
-
-async def github_commit_file(file_path: str, new_code: str, sha: str, message: str):
-    if not GITHUB_TOKEN:
-        raise Exception("GITHUB_TOKEN is missing.")
-
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{file_path}"
-    headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json"
-    }
-    payload = {
-        "message": message,
-        "content": base64.b64encode(new_code.encode("utf-8")).decode("utf-8"),
-        "sha": sha
-    }
-
-    async with http_session.put(url, headers=headers, json=payload, timeout=30) as resp:
-        if resp.status not in (200, 201):
-            raise Exception(f"GitHub commit status {resp.status}: {(await resp.text())[:300]}")
-        return await resp.json()
-
-
-async def render_trigger_deploy():
-    if not RENDER_API_KEY:
-        raise Exception("RENDER_API_KEY is missing.")
-    if not RENDER_SERVICE_ID:
-        raise Exception("RENDER_SERVICE_ID is missing.")
-
-    url = f"https://api.render.com/v1/services/{RENDER_SERVICE_ID}/deploys"
-    headers = {
-        "Authorization": f"Bearer {RENDER_API_KEY}",
-        "Accept": "application/json"
-    }
-
-    async with http_session.post(url, headers=headers, timeout=25) as resp:
-        if resp.status not in (200, 201, 202):
-            raise Exception(f"Render deploy status {resp.status}: {(await resp.text())[:300]}")
-        try:
-            return await resp.json()
-        except Exception:
-            return {"status": resp.status}
-
-
-async def render_services(limit: int = 10):
-    if not RENDER_API_KEY:
-        raise Exception("RENDER_API_KEY is missing.")
-
-    headers = {
-        "Authorization": f"Bearer {RENDER_API_KEY}",
-        "Accept": "application/json"
-    }
-    async with http_session.get(f"https://api.render.com/v1/services?limit={limit}", headers=headers, timeout=25) as resp:
-        if resp.status != 200:
-            raise Exception(f"Render status {resp.status}: {(await resp.text())[:300]}")
-        return await resp.json()
-
-
-async def cloudflare_zones():
-    if not CLOUDFLARE_API_TOKEN:
-        raise Exception("CLOUDFLARE_API_TOKEN is missing.")
-
-    headers = {"Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}"}
-    async with http_session.get("https://api.cloudflare.com/client/v4/zones?status=active", headers=headers, timeout=25) as resp:
-        if resp.status != 200:
-            raise Exception(f"Cloudflare status {resp.status}: {(await resp.text())[:300]}")
-        data = await resp.json()
-        return data.get("result", [])
-
-
-async def cloudflare_ai_test():
-    if not CLOUDFLARE_API_TOKEN:
-        raise Exception("CLOUDFLARE_API_TOKEN is missing.")
-    if not CLOUDFLARE_ACCOUNT_ID:
-        raise Exception("CLOUDFLARE_ACCOUNT_ID is missing.")
-
-    url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/meta/llama-3.1-8b-instruct"
-    headers = {
-        "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
-        "Content-Type": "application/json"
-    }
-    payload = {"prompt": "Say OK in one word.", "max_tokens": 5}
-
-    async with http_session.post(url, headers=headers, json=payload, timeout=25) as resp:
-        if resp.status != 200:
-            raise Exception(f"Cloudflare AI status {resp.status}: {(await resp.text())[:300]}")
-        return await resp.json()
 
 # =========================
 # EVOLUTION CORE
@@ -2922,6 +3001,12 @@ async def cmd_start(message: types.Message):
         "🔍 <code>/search запрос</code> — поиск через Tavily.\n"
         "🚆 <code>/db</code> / <code>/bahn</code> / <code>/zug</code> — DB Navigator и Deutsche Bahn.\n"
         "📍 <code>/gps</code> / <code>/gps_request</code> — GPS / Live Location.\n"
+        "🖼 <code>/image prompt</code> — создать изображение.\n"
+        "🎥 <code>/video prompt</code> — создать видео.\n"
+        "🎼 <code>/music prompt</code> — создать музыку.\n"
+        "🔊 <code>/sfx prompt</code> — создать звук.\n"
+        "🗣 <code>/voice текст</code> — озвучить текст.\n"
+        "🎙 Голосовое сообщение — распознать и ответить.\n"
         "🧠 <code>/remember факт</code> — запомнить важное.\n"
         "📚 <code>/memory</code> — показать твою память.\n\n"
         "Я могу помогать с кодом, поиском, анализом, текстами, GitHub, Render, Cloudflare и проектами."
@@ -3304,15 +3389,44 @@ async def cmd_image(message: types.Message):
 
     status = await message.answer("🖼️ Генерирую изображение...")
     try:
-        url = await generate_image(prompt)
+        result = await generate_image(prompt)
         await status.delete()
-        await message.answer_photo(
-            photo=url,
-            caption=f"🎨 <b>Prompt:</b> {html.escape(prompt)}",
-            parse_mode="HTML"
-        )
+
+        if result["type"] == "bytes":
+            await message.answer_photo(
+                photo=BufferedInputFile(result["data"], filename="aion_image.png"),
+                caption=f"🎨 <b>Prompt:</b> {html.escape(prompt)}",
+                parse_mode="HTML"
+            )
+        else:
+            await message.answer_photo(
+                photo=result["data"],
+                caption=f"🎨 <b>Prompt:</b> {html.escape(prompt)}",
+                parse_mode="HTML"
+            )
     except Exception as e:
         await status.edit_text(f"❌ Ошибка image: {e}")
+
+
+@dp.message(Command("voice"))
+async def cmd_voice(message: types.Message):
+    if not cooldown(message.from_user.id):
+        return await message.answer("⚠️ Подожди несколько секунд.")
+
+    text = message.text.replace("/voice", "", 1).strip()
+    if not text:
+        return await message.answer("⚠️ Использование: /voice [текст для озвучки]")
+
+    status = await message.answer("🗣️ Озвучиваю...")
+    try:
+        audio = await openai_tts_bytes(text)
+        await status.delete()
+        await message.answer_audio(
+            audio=BufferedInputFile(audio, filename="aion_voice.mp3"),
+            caption="🎙️ Озвучка готова."
+        )
+    except Exception as e:
+        await status.edit_text(f"❌ Ошибка voice: {e}")
 
 
 @dp.message(Command("music"))
@@ -3337,6 +3451,28 @@ async def cmd_music(message: types.Message):
         await status.edit_text(f"❌ Ошибка music: {e}")
 
 
+@dp.message(Command("sfx"))
+async def cmd_sfx(message: types.Message):
+    if not cooldown(message.from_user.id):
+        return await message.answer("⚠️ Подожди несколько секунд.")
+
+    prompt = message.text.replace("/sfx", "", 1).strip()
+    if not prompt:
+        return await message.answer("⚠️ Использование: /sfx [описание звука]")
+
+    status = await message.answer("🔊 Генерирую звук...")
+    try:
+        audio = await generate_sfx(prompt)
+        await status.delete()
+        await message.answer_audio(
+            audio=BufferedInputFile(audio, filename="aion_sfx.wav"),
+            caption=f"🔊 <b>Prompt:</b> {html.escape(prompt)}",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await status.edit_text(f"❌ Ошибка sfx: {e}")
+
+
 @dp.message(Command("video"))
 async def cmd_video(message: types.Message):
     if not cooldown(message.from_user.id):
@@ -3346,7 +3482,7 @@ async def cmd_video(message: types.Message):
     if not prompt:
         return await message.answer("⚠️ Использование: /video [сцена]")
 
-    status = await message.answer("🎥 Генерирую видео...")
+    status = await message.answer("🎥 Генерирую видео. Это может занять время...")
     try:
         url = await generate_video(prompt)
         await status.delete()
@@ -3357,6 +3493,92 @@ async def cmd_video(message: types.Message):
         )
     except Exception as e:
         await status.edit_text(f"❌ Ошибка video: {e}")
+
+
+
+async def telegram_photo_to_data_uri(message: types.Message) -> str:
+    """
+    Downloads a replied Telegram photo and converts it to a data URI for Fal image-to-video.
+    This avoids exposing BOT_TOKEN in a Telegram file URL.
+    """
+    if not message.reply_to_message or not message.reply_to_message.photo:
+        raise Exception("Нужно ответить командой /animate на сообщение с фото.")
+
+    photo = message.reply_to_message.photo[-1]
+    tg_file = await bot.get_file(photo.file_id)
+    buffer = io.BytesIO()
+    await bot.download_file(tg_file.file_path, destination=buffer)
+    image_bytes = buffer.getvalue()
+    if not image_bytes:
+        raise Exception("Не удалось скачать фото из Telegram.")
+
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
+    return f"data:image/jpeg;base64,{b64}"
+
+
+
+@dp.message(Command("animate"))
+async def cmd_animate(message: types.Message):
+    if not cooldown(message.from_user.id):
+        return await message.answer("⚠️ Подожди несколько секунд.")
+
+    prompt = message.text.replace("/animate", "", 1).strip() or "cinematic smooth motion, natural camera movement"
+
+    if not message.reply_to_message or not message.reply_to_message.photo:
+        return await message.answer(
+            "⚠️ Использование:\n"
+            "1. Отправь фото в Telegram.\n"
+            "2. Ответь на это фото командой:\n"
+            "<code>/animate cinematic motion, smooth camera</code>",
+            parse_mode="HTML"
+        )
+
+    status = await message.answer("🎞️ Оживляю фото в видео через Fal...")
+    try:
+        image_data_uri = await telegram_photo_to_data_uri(message)
+        url = await generate_image_to_video(image_data_uri, prompt)
+        await status.delete()
+        await message.answer_video(
+            video=url,
+            caption=f"🎞️ <b>Animate:</b> {html.escape(prompt)}",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await status.edit_text(f"❌ Ошибка animate: {e}")
+
+
+@dp.message(Command("image2video"))
+async def cmd_image2video(message: types.Message):
+    if not cooldown(message.from_user.id):
+        return await message.answer("⚠️ Подожди несколько секунд.")
+
+    raw = message.text.replace("/image2video", "", 1).strip()
+    if not raw:
+        return await message.answer(
+            "⚠️ Использование:\n"
+            "/image2video [public_image_url] [описание движения]\n\n"
+            "Важно: Fal должен видеть публичный URL изображения."
+        )
+
+    parts = raw.split(maxsplit=1)
+    image_url = parts[0].strip()
+    prompt = parts[1].strip() if len(parts) > 1 else "Animate this image cinematically."
+
+    if not image_url.startswith("http"):
+        return await message.answer("⚠️ Первый аргумент должен быть публичной ссылкой на изображение.")
+
+    status = await message.answer("🎞️ Оживляю изображение в видео...")
+    try:
+        url = await generate_image_to_video(image_url, prompt)
+        await status.delete()
+        await message.answer_video(
+            video=url,
+            caption=f"🎞️ <b>Image-to-video:</b> {html.escape(prompt)}",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await status.edit_text(f"❌ Ошибка image2video: {e}")
+
 
 
 @dp.message(Command("github"))
@@ -3611,6 +3833,103 @@ async def cmd_evolve_auto(message: types.Message):
     except Exception as e:
         log_evolution("evolve_auto", "failed", str(e))
         await status.edit_text(f"❌ Ошибка evolve_auto: {e}")
+
+
+
+@dp.message(lambda message: message.voice is not None)
+async def handle_voice_message(message: types.Message):
+    if not OPENAI_API_KEY:
+        return await message.answer("❌ OPENAI_API_KEY отсутствует, распознавание голоса недоступно.")
+
+    if not cooldown(message.from_user.id):
+        return await message.answer("⚠️ Подожди несколько секунд.")
+
+    status = await message.answer("🎙️ Слушаю голосовое...")
+    try:
+        tg_file = await bot.get_file(message.voice.file_id)
+        buffer = io.BytesIO()
+        await bot.download_file(tg_file.file_path, destination=buffer)
+        audio_bytes = buffer.getvalue()
+
+        transcript = await openai_transcribe_audio_bytes(audio_bytes, filename="voice.ogg")
+        if not transcript:
+            return await status.edit_text("❌ Я не смогла разобрать голосовое.")
+
+        user_id = message.from_user.id
+        save_user(user_id, message.from_user.username, message.from_user.first_name)
+        history = get_memory(user_id, MAX_HISTORY_MESSAGES)
+        answer = await run_ai_pipeline(transcript, history, user_id)
+        answer = enforce_feminine_self_reference(answer)
+
+        save_memory(user_id, "user", f"[voice] {transcript}")
+        save_memory(user_id, "assistant", answer)
+
+        await status.delete()
+        await send_split(message, f"🎙️ <b>Я услышала:</b>\n{html.escape(transcript)}\n\n🧠 <b>AION:</b>\n{html.escape(answer)}", parse_mode="HTML")
+
+        if AION_VOICE_REPLY_ENABLED:
+            voice_audio = await openai_tts_bytes(answer)
+            await message.answer_audio(
+                audio=BufferedInputFile(voice_audio, filename="aion_reply.mp3"),
+                caption="🗣️ Голосовой ответ AION."
+            )
+
+    except Exception as e:
+        await status.edit_text(f"❌ Ошибка обработки голосового: {e}")
+
+
+def _strip_media_prefix(text: str, prefixes: list[str]) -> str:
+    result = (text or "").strip()
+    lower = result.lower()
+    for p in prefixes:
+        if lower.startswith(p.lower()):
+            return result[len(p):].strip()
+    return result
+
+
+def _starts_with_any(text: str, prefixes: list[str]) -> bool:
+    t = (text or "").strip().lower()
+    return any(t.startswith(p.lower()) for p in prefixes)
+
+
+@dp.message(lambda message: message.text and _starts_with_any(message.text, ["нарисуй", "создай фото", "сгенерируй фото", "сделай картинку", "draw ", "generate image"]))
+async def natural_image_handler(message: types.Message):
+    prompt = _strip_media_prefix(message.text, ["нарисуй", "создай фото", "сгенерируй фото", "сделай картинку", "draw", "generate image"])
+    if not prompt:
+        return await message.answer("Что именно нарисовать?")
+    fake_message = message
+    fake_message.text = "/image " + prompt
+    await cmd_image(fake_message)
+
+
+@dp.message(lambda message: message.text and _starts_with_any(message.text, ["создай видео", "сгенерируй видео", "сделай видео", "video "]))
+async def natural_video_handler(message: types.Message):
+    prompt = _strip_media_prefix(message.text, ["создай видео", "сгенерируй видео", "сделай видео", "video"])
+    if not prompt:
+        return await message.answer("Какое видео создать?")
+    fake_message = message
+    fake_message.text = "/video " + prompt
+    await cmd_video(fake_message)
+
+
+@dp.message(lambda message: message.text and _starts_with_any(message.text, ["создай музыку", "сделай музыку", "сгенерируй музыку", "music "]))
+async def natural_music_handler(message: types.Message):
+    prompt = _strip_media_prefix(message.text, ["создай музыку", "сделай музыку", "сгенерируй музыку", "music"])
+    if not prompt:
+        return await message.answer("Какую музыку создать?")
+    fake_message = message
+    fake_message.text = "/music " + prompt
+    await cmd_music(fake_message)
+
+
+@dp.message(lambda message: message.text and _starts_with_any(message.text, ["озвучь", "прочитай голосом", "скажи голосом", "voice "]))
+async def natural_voice_handler(message: types.Message):
+    text = _strip_media_prefix(message.text, ["озвучь", "прочитай голосом", "скажи голосом", "voice"])
+    if not text:
+        return await message.answer("Что озвучить?")
+    fake_message = message
+    fake_message.text = "/voice " + text
+    await cmd_voice(fake_message)
 
 
 @dp.message()
