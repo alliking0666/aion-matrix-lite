@@ -89,24 +89,13 @@ AI_MAX_COMPLETION_TOKENS = int(os.getenv("AI_MAX_COMPLETION_TOKENS") or 900)
 GROQ_COMPACT_CONTEXT_CHARS = int(os.getenv("GROQ_COMPACT_CONTEXT_CHARS") or 9000)
 CEREBRAS_COMPACT_CONTEXT_CHARS = int(os.getenv("CEREBRAS_COMPACT_CONTEXT_CHARS") or 12000)
 
-# Ollama is intentionally disabled in this build.
-# AION uses OpenAI/Gemini/OpenRouter/Groq/Cerebras instead.
 OLLAMA_ENABLED = False
-OLLAMA_BASE_URL = ""
 OLLAMA_MODEL = ""
 
 TAVILY_API_KEY = (os.getenv("TAVILY_API_KEY") or "").strip()
 
-# Google/Yandex search are intentionally disabled in this build.
-# Tavily is the only active internet-search provider to avoid 403/permission noise.
 TAVILY_SEARCH_ENABLED = (os.getenv("TAVILY_SEARCH_ENABLED") or "true").strip().lower() == "true"
-GOOGLE_SEARCH_ENABLED = False
-YANDEX_SEARCH_ENABLED = False
 
-GOOGLE_SEARCH_API_KEY = ""
-GOOGLE_SEARCH_ENGINE_ID = ""
-YANDEX_SEARCH_API_KEY = ""
-YANDEX_FOLDER_ID = ""
 
 GITHUB_TOKEN = (os.getenv("GITHUB_TOKEN") or "").strip()
 GITHUB_REPO = (os.getenv("GITHUB_REPO") or "alliking0666/aion-matrix-lite").strip()
@@ -391,8 +380,6 @@ def get_evolution_log(limit: int = 20):
     return rows
 
 
-
-
 def log_watchdog(component: str, status: str, details: str = ""):
     conn = db_connect()
     cur = conn.cursor()
@@ -635,13 +622,11 @@ def env_state(value) -> str:
     return "🟢 LOADED" if value else "🔴 MISSING"
 
 
-
-
 AION_REALTIME_INTERNET_RULES = """
 Real-time internet rules:
 
 AION_MATRIX should use live internet search for questions that depend on current, changing, local, factual or external data.
-Use Tavily search layer when available. Google and Yandex are disabled in this build.
+Use Tavily search layer when available. Only Tavily is used for live internet search in this build.
 For live/current questions, do not rely only on static memory or model knowledge.
 If a search provider fails, explain the real provider error briefly and continue with available engines.
 If no live engine works, say honestly that real-time internet data could not be obtained.
@@ -1267,7 +1252,6 @@ def enforce_feminine_self_reference(text: str) -> str:
     return fixed
 
 
-
 # =========================
 # EMBEDDED OFFLINE WORLD CORE
 # =========================
@@ -1317,7 +1301,7 @@ def world_country_answer(query: str) -> str | None:
     if "сколько стран" in q or "список стран" in q:
         return (
             "🌍 В моей встроенной компактной базе сейчас есть базовый список стран и столиц для офлайн-ответов. "
-            "Для полного и актуального списка стран я проверю интернет через Tavily/Google/Yandex, потому что политические статусы и признание территорий могут быть спорными и меняющимися."
+            "Для полного и актуального списка стран я проверю интернет через Tavily/unused external search providers, потому что политические статусы и признание территорий могут быть спорными и меняющимися."
         )
 
     return None
@@ -1712,7 +1696,6 @@ def finalize_ai_answer(text: str) -> str:
     return enforce_feminine_self_reference(text or "")
 
 
-
 async def ask_openai_compatible(
     url: str,
     key: str,
@@ -1754,10 +1737,6 @@ async def ask_openai_compatible(
 
         error_text = await resp.text()
         raise Exception(f"status {resp.status}: {error_text[:400]}")
-
-
-async def ask_ollama(text: str, history: list[dict] | None = None):
-    raise Exception("Ollama is disabled in this build.")
 
 
 async def run_ai_pipeline(text: str, history: list[dict], user_id: int):
@@ -2056,98 +2035,6 @@ async def search_tavily(query: str):
             "title": r.get("title", ""),
             "content": r.get("content", ""),
             "url": r.get("url", "")
-        })
-
-    return results
-
-
-async def search_google(query: str):
-    query = build_short_live_search_query(query)
-    if not query:
-        return []
-    if not GOOGLE_SEARCH_API_KEY or not GOOGLE_SEARCH_ENGINE_ID:
-        return []
-
-    params = {
-        "key": GOOGLE_SEARCH_API_KEY,
-        "cx": GOOGLE_SEARCH_ENGINE_ID,
-        "q": query,
-        "num": 5
-    }
-
-    async with http_session.get("https://www.googleapis.com/customsearch/v1", params=params, timeout=25) as resp:
-        if resp.status != 200:
-            raise Exception(f"Google status {resp.status}: {(await resp.text())[:250]}")
-        data = await resp.json()
-
-    return [{
-        "source": "Google",
-        "title": item.get("title", ""),
-        "content": item.get("snippet", ""),
-        "url": item.get("link", "")
-    } for item in data.get("items", [])]
-
-
-async def search_yandex(query: str):
-    query = build_short_live_search_query(query)
-    if not query:
-        return []
-    if not YANDEX_SEARCH_API_KEY or not YANDEX_FOLDER_ID:
-        return []
-
-    payload = {
-        "query": {
-            "searchType": "SEARCH_TYPE_RU",
-            "queryText": query,
-            "familyMode": "FAMILY_MODE_MODERATE"
-        },
-        "folderId": YANDEX_FOLDER_ID,
-        "responseFormat": "FORMAT_HTML"
-    }
-    headers = {
-        "Authorization": f"Api-Key {YANDEX_SEARCH_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
-    async with http_session.post(
-        "https://searchapi.api.cloud.yandex.net/v2/web/search",
-        json=payload,
-        headers=headers,
-        timeout=30
-    ) as resp:
-        if resp.status != 200:
-            raise Exception(f"Yandex status {resp.status}: {(await resp.text())[:250]}")
-        data = await resp.json()
-
-    results = []
-
-    raw = data.get("rawData", "")
-    if raw:
-        try:
-            decoded = base64.b64decode(raw).decode("utf-8", errors="ignore")
-            clean = html.unescape(decoded)
-            clean = (
-                clean.replace("<b>", "")
-                .replace("</b>", "")
-                .replace("<hlword>", "")
-                .replace("</hlword>", "")
-            )
-            if clean.strip():
-                results.append({
-                    "source": "Yandex",
-                    "title": "Yandex Search Results",
-                    "content": clean[:2500],
-                    "url": ""
-                })
-        except Exception as e:
-            raise Exception(f"Yandex rawData decode failed: {e}")
-
-    for item in data.get("results", []) or []:
-        results.append({
-            "source": "Yandex",
-            "title": item.get("title", ""),
-            "content": item.get("snippet", item.get("text", "")),
-            "url": item.get("url", "")
         })
 
     return results
@@ -2631,8 +2518,7 @@ async def health_matrix():
             {"Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}"}
         ))
 
-    # Google Search check disabled in Tavily-only build.
-
+    
     results = {}
     if checks:
         raw = await asyncio.gather(*checks, return_exceptions=True)
@@ -2833,7 +2719,6 @@ async def cmd_start(message: types.Message):
     await message.answer(public_help, parse_mode="HTML", disable_web_page_preview=True)
 
 
-
 @dp.message(Command("father"))
 async def cmd_father(message: types.Message):
     """Private owner verification check."""
@@ -2918,14 +2803,9 @@ async def cmd_status(message: types.Message):
         f"GROQ_MODELS: <code>{html.escape(GROQ_MODEL_CANDIDATES)}</code>\n"
         f"CEREBRAS_MODELS: <code>{html.escape(CEREBRAS_MODEL_CANDIDATES)}</code>\n"
         f"OPENROUTER_SMART_MODEL: <code>{html.escape(OPENROUTER_SMART_MODEL)}</code>\n"
-        f"OLLAMA_BASE_URL: ⚪ DISABLED\n"
-        f"WORLD_KNOWLEDGE_AUTO_SEARCH: <code>{str(WORLD_KNOWLEDGE_AUTO_SEARCH).upper()}</code>\n\n"
+f"WORLD_KNOWLEDGE_AUTO_SEARCH: <code>{str(WORLD_KNOWLEDGE_AUTO_SEARCH).upper()}</code>\n\n"
         f"TAVILY_API_KEY: {env_state(TAVILY_API_KEY)}\n"
-        f"GOOGLE_SEARCH_API_KEY: ⚪ DISABLED\n"
-        f"GOOGLE_SEARCH_ENGINE_ID: ⚪ DISABLED\n"
-        f"YANDEX_SEARCH_API_KEY: ⚪ DISABLED\n"
-        f"YANDEX_FOLDER_ID: {env_state(YANDEX_FOLDER_ID)}\n\n"
-        f"GITHUB_TOKEN: {env_state(GITHUB_TOKEN)}\n"
+f"GITHUB_TOKEN: {env_state(GITHUB_TOKEN)}\n"
         f"GITHUB_REPO: <code>{html.escape(GITHUB_REPO)}</code>\n"
         f"RENDER_API_KEY: {env_state(RENDER_API_KEY)}\n"
         f"RENDER_SERVICE_ID: {env_state(RENDER_SERVICE_ID)}\n\n"
@@ -2966,7 +2846,6 @@ async def cmd_health(message: types.Message):
         await message.answer(out, parse_mode="HTML")
     except Exception as e:
         await status.edit_text(f"❌ Health check failed: {e}")
-
 
 
 @dp.message(Command("watchdog_on"))
@@ -3033,7 +2912,6 @@ async def cmd_watchdog_log(message: types.Message):
             f"{html.escape(item['details'][:500])}\n\n"
         )
     await send_split(message, out, "HTML")
-
 
 
 @dp.message(Command("world"))
@@ -3235,7 +3113,6 @@ async def cmd_cloudflare(message: types.Message):
         await send_split(message, out, "HTML")
     except Exception as e:
         await status.edit_text(f"❌ Ошибка Cloudflare: {e}")
-
 
 
 @dp.message(Command("remember"))
@@ -3507,8 +3384,6 @@ async def handle_web_health(request):
     })
 
 
-
-
 def api_authorized(request) -> bool:
     if not API_ADMIN_KEY:
         return False
@@ -3536,8 +3411,6 @@ async def api_status(request):
             "cerebras": bool(CEREBRAS_API_KEY),
             "openrouter": bool(OPENROUTER_API_KEY),
             "tavily": bool(TAVILY_API_KEY),
-            "google": bool(GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_ENGINE_ID),
-            "yandex": bool(YANDEX_SEARCH_API_KEY and YANDEX_FOLDER_ID),
             "github": bool(GITHUB_TOKEN),
             "render": bool(RENDER_API_KEY and RENDER_SERVICE_ID),
             "cloudflare": bool(CLOUDFLARE_API_TOKEN),
