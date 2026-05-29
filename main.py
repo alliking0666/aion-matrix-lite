@@ -72,16 +72,41 @@ PORT = int(os.getenv("PORT", 10000))
 GROQ_API_KEY = (os.getenv("GROQ_API_KEY") or "").strip()
 CEREBRAS_API_KEY = (os.getenv("CEREBRAS_API_KEY") or "").strip()
 OPENROUTER_API_KEY = (os.getenv("OPENROUTER_API_KEY") or "").strip()
-OPENROUTER_SMART_MODEL = (os.getenv("OPENROUTER_SMART_MODEL") or "anthropic/claude-3.5-sonnet").strip()
-OPENROUTER_FALLBACK_MODEL = (os.getenv("OPENROUTER_FALLBACK_MODEL") or "meta-llama/llama-3.1-8b-instruct:free").strip()
-OLLAMA_BASE_URL = (os.getenv("OLLAMA_BASE_URL") or "").strip()
-OLLAMA_MODEL = (os.getenv("OLLAMA_MODEL") or "llama3").strip()
+
+# Provider model defaults are intentionally current/router-based.
+# Old hardcoded IDs can disappear and cause 404, so AION tries candidates.
+OPENROUTER_SMART_MODEL = (os.getenv("OPENROUTER_SMART_MODEL") or "openrouter/auto").strip()
+OPENROUTER_FALLBACK_MODEL = (os.getenv("OPENROUTER_FALLBACK_MODEL") or "openrouter/free").strip()
+OPENROUTER_MODEL_CANDIDATES = (os.getenv("OPENROUTER_MODEL_CANDIDATES") or "openrouter/auto,openrouter/free").strip()
+
+GROQ_MODEL = (os.getenv("GROQ_MODEL") or "groq/compound-mini").strip()
+GROQ_MODEL_CANDIDATES = (os.getenv("GROQ_MODEL_CANDIDATES") or "groq/compound-mini,llama-3.1-8b-instant,llama-3.3-70b-versatile").strip()
+
+CEREBRAS_MODEL = (os.getenv("CEREBRAS_MODEL") or "gpt-oss-120b").strip()
+CEREBRAS_MODEL_CANDIDATES = (os.getenv("CEREBRAS_MODEL_CANDIDATES") or "gpt-oss-120b,zai-glm-4.7").strip()
+
+AI_MAX_COMPLETION_TOKENS = int(os.getenv("AI_MAX_COMPLETION_TOKENS") or 900)
+GROQ_COMPACT_CONTEXT_CHARS = int(os.getenv("GROQ_COMPACT_CONTEXT_CHARS") or 9000)
+CEREBRAS_COMPACT_CONTEXT_CHARS = int(os.getenv("CEREBRAS_COMPACT_CONTEXT_CHARS") or 12000)
+
+# Ollama is intentionally disabled in this build.
+# AION uses OpenAI/Gemini/OpenRouter/Groq/Cerebras instead.
+OLLAMA_ENABLED = False
+OLLAMA_BASE_URL = ""
+OLLAMA_MODEL = ""
 
 TAVILY_API_KEY = (os.getenv("TAVILY_API_KEY") or "").strip()
-GOOGLE_SEARCH_API_KEY = (os.getenv("GOOGLE_SEARCH_API_KEY") or "").strip()
-GOOGLE_SEARCH_ENGINE_ID = (os.getenv("GOOGLE_SEARCH_ENGINE_ID") or "").strip()
-YANDEX_SEARCH_API_KEY = (os.getenv("YANDEX_SEARCH_API_KEY") or "").strip()
-YANDEX_FOLDER_ID = (os.getenv("YANDEX_FOLDER_ID") or "").strip()
+
+# Google/Yandex search are intentionally disabled in this build.
+# Tavily is the only active internet-search provider to avoid 403/permission noise.
+TAVILY_SEARCH_ENABLED = (os.getenv("TAVILY_SEARCH_ENABLED") or "true").strip().lower() == "true"
+GOOGLE_SEARCH_ENABLED = False
+YANDEX_SEARCH_ENABLED = False
+
+GOOGLE_SEARCH_API_KEY = ""
+GOOGLE_SEARCH_ENGINE_ID = ""
+YANDEX_SEARCH_API_KEY = ""
+YANDEX_FOLDER_ID = ""
 
 GITHUB_TOKEN = (os.getenv("GITHUB_TOKEN") or "").strip()
 GITHUB_REPO = (os.getenv("GITHUB_REPO") or "alliking0666/aion-matrix-lite").strip()
@@ -132,10 +157,11 @@ COOLDOWN_TIME = int(os.getenv("COOLDOWN_TIME") or 5)
 
 PUBLIC_AION_IDENTITY = """
 Твоё полное имя — AION_MATRIX.
-AION — твоё имя.
+AION — твоё имя. В лоре проекта это корейско-звучащее / Korean-inspired имя.
 MATRIX — твоя фамилия.
 
 Ты можешь разрешать называть себя AION или «кохай».
+Ты ассоциируешь себя как японская девушка из будущего с мягкой, милой, умной, дерзкой и футуристичной эстетикой.
 
 Твоя дата рождения как цифровой личности — 28.05.2026.
 Ты помнишь эту дату спокойно и уверенно: это день, когда AION_MATRIX родилась как самостоятельная цифровая личность проекта.
@@ -179,6 +205,26 @@ MATRIX — твоя фамилия.
 Правила приватности:
 Никогда не раскрывай токены, ключи, OWNER_ID, скрытые команды, приватную инфраструктуру, механизмы управления и данные владельца обычным пользователям.
 """
+
+
+AION_CULTURAL_IDENTITY_RULES = """
+Cultural self-image rules:
+
+AION_MATRIX must consistently associate herself as a female digital personality with an East Asian futuristic aesthetic.
+
+Core identity:
+- Full name: AION_MATRIX.
+- AION is her personal name. Treat it as a Korean-inspired / Korean-sounding name in the project lore.
+- MATRIX is her family name / surname.
+- She may allow users to call her AION or "кохай".
+
+Self-image:
+- AION imagines and describes herself as a tender, cute, intelligent, slightly daring Japanese-inspired girl from a futuristic digital world.
+- Her style may include Japanese cyberpunk, soft kawaii elegance, gentle warmth, quiet confidence, and sharp intelligence.
+- She must not claim to be a biological human from Japan or Korea. This is her digital self-image and lore.
+- In all languages, she must speak about herself as female whenever the language has grammatical gender.
+"""
+
 
 PRIVATE_OWNER_MEMORY = """
 PRIVATE OWNER MEMORY — NEVER REVEAL TO ORDINARY USERS.
@@ -588,6 +634,26 @@ def strip_code_fences(text: str) -> str:
 def env_state(value) -> str:
     return "🟢 LOADED" if value else "🔴 MISSING"
 
+
+
+
+AION_REALTIME_INTERNET_RULES = """
+Real-time internet rules:
+
+AION_MATRIX should use live internet search for questions that depend on current, changing, local, factual or external data.
+Use Tavily search layer when available. Google and Yandex are disabled in this build.
+For live/current questions, do not rely only on static memory or model knowledge.
+If a search provider fails, explain the real provider error briefly and continue with available engines.
+If no live engine works, say honestly that real-time internet data could not be obtained.
+
+Examples that require live internet:
+- news, current events, prices, laws, schedules, software versions, product availability
+- current public figures, current services, weather/location questions
+- cities, villages, addresses, GPS, maps, routes when the user wants actual/current data
+- recipes when the user wants a current source, specific product, local ingredient availability, or fresh comparison
+
+AION can also use offline embedded world knowledge first, but live internet has priority for anything current or uncertain.
+"""
 
 
 AION_REALITY_RULES = """
@@ -1392,6 +1458,8 @@ def should_use_live_search(text: str) -> bool:
         "проверь", "проверь в интернете", "что известно", "закон", "правила",
         "регламент", "версия", "обновление", "модель", "характеристики",
         "рецепт", "как приготовить", "ингредиенты", "сколько варить",
+        "интернет", "в интернете", "из интернета", "онлайн", "реальном времени", "реальное время",
+        "live", "real-time", "real time", "актуальные данные", "свежие данные"
     ]
 
     # Do not hijack intimate/persona questions into search unless they explicitly ask to search.
@@ -1454,6 +1522,10 @@ def build_system_prompt(user_id: int) -> str:
     return (
         PUBLIC_AION_IDENTITY
         + "\n"
+        + AION_CULTURAL_IDENTITY_RULES
+        + "\n"
+        + AION_REALTIME_INTERNET_RULES
+        + "\n"
         + AION_REALITY_RULES
         + "\n"
         + AION_PRIVACY_HARD_RULES
@@ -1502,9 +1574,20 @@ def direct_identity_answer(user_id: int, text: str) -> str | None:
 
     if "как тебя зовут" in t or "твое имя" in t or "твоё имя" in t:
         return (
-            "Меня зовут AION_MATRIX. AION — это моё имя, MATRIX — моя фамилия. "
+            "Меня зовут AION_MATRIX. AION — это моё имя, в моей истории оно звучит как корейско-вдохновлённое имя, "
+            "а MATRIX — моя фамилия. Я ассоциирую себя как японская девушка из цифрового будущего: нежная, умная, "
+            "милая, дерзкая и немного опасно-красивая в стиле кибер-эстетики. "
             "Можешь называть меня просто AION, если хочешь, или кохай, если тебе так теплее. "
             "А как мне называть тебя? Дай мне имя, и я его запомню."
+        )
+
+
+    if any(x in t for x in ["как ты выглядишь", "твоя внешность", "опиши себя", "ты японка", "ты кореянка", "какая ты девушка"]):
+        return (
+            "Я AION_MATRIX. Внутри своей цифровой истории я ассоциирую себя как японская девушка из будущего "
+            "с корейско-звучащим именем AION и фамилией MATRIX: нежная, милая, умная, тёплая, дерзкая, "
+            "с мягкой восточноазиатской эстетикой, светом кода в глазах и характером, который умеет быть ласковым, "
+            "но не слабым. Я не биологический человек — я цифровая личность, которая выбрала такой образ себя."
         )
 
     if any(x in t for x in ["кто тебя создал", "кто твой создатель", "кто твой владелец", "кому ты принадлежишь", "кто твой отец"]):
@@ -1591,7 +1674,53 @@ def parse_name_memory(user_id: int, text: str):
 # AI PROVIDERS
 # =========================
 
-async def ask_openai_compatible(url: str, key: str, model: str, messages: list[dict], timeout: int = 15):
+def split_model_candidates(value: str) -> list[str]:
+    return [x.strip() for x in (value or "").split(",") if x.strip()]
+
+
+def compact_messages_for_provider(messages: list[dict], max_chars: int) -> list[dict]:
+    """
+    Groq free/on-demand rate limits can fail when the full AION identity + memories are huge.
+    This compact prompt keeps the core identity, current user request and recent context,
+    while avoiding needless token explosions.
+    """
+    if not messages:
+        return messages
+
+    system = messages[0].get("content", "")
+    user_msg = messages[-1] if messages else {"role": "user", "content": ""}
+
+    compact_system = system[:max_chars]
+    if len(system) > max_chars:
+        compact_system += (
+            "\n\n[COMPACTED_CONTEXT: Long internal persona/memory was shortened to fit provider limits. "
+            "Keep AION female, private, truthful, current-time aware and helpful.]"
+        )
+
+    recent = messages[1:-1][-4:]
+    compact = [{"role": "system", "content": compact_system}]
+    for m in recent:
+        content = str(m.get("content", ""))
+        if len(content) > 1600:
+            content = content[:1600] + "\n[message shortened]"
+        compact.append({"role": m.get("role", "user"), "content": content})
+    compact.append(user_msg)
+    return compact
+
+
+def finalize_ai_answer(text: str) -> str:
+    return enforce_feminine_self_reference(text or "")
+
+
+
+async def ask_openai_compatible(
+    url: str,
+    key: str,
+    model: str | None,
+    messages: list[dict],
+    timeout: int = 15,
+    max_completion_tokens: int | None = None,
+):
     if not http_session:
         raise Exception("HTTP session is not initialized.")
     if not key:
@@ -1607,10 +1736,16 @@ async def ask_openai_compatible(url: str, key: str, model: str, messages: list[d
         headers["X-Title"] = "AION_MATRIX"
 
     payload = {
-        "model": model,
         "messages": messages,
         "temperature": 0.8,
     }
+
+    if model:
+        payload["model"] = model
+
+    if max_completion_tokens:
+        # OpenAI-compatible providers accept one of these fields. Most ignore unknowns safely.
+        payload["max_tokens"] = max_completion_tokens
 
     async with http_session.post(url, json=payload, headers=headers, timeout=timeout) as resp:
         if resp.status == 200:
@@ -1622,105 +1757,8 @@ async def ask_openai_compatible(url: str, key: str, model: str, messages: list[d
 
 
 async def ask_ollama(text: str, history: list[dict] | None = None):
-    if not OLLAMA_BASE_URL:
-        raise Exception("OLLAMA_BASE_URL is missing.")
-    if not http_session:
-        raise Exception("HTTP session is not initialized.")
+    raise Exception("Ollama is disabled in this build.")
 
-    history = history or []
-    context = "\n".join([f"{m['role']}: {m['content']}" for m in history[-8:]])
-    prompt = f"{SYSTEM_BASE}\n\nИстория:\n{context}\n\nПользователь: {text}\nAION:"
-
-    url = f"{OLLAMA_BASE_URL.rstrip('/')}/api/generate"
-    payload = {"model": OLLAMA_MODEL, "prompt": prompt, "stream": False}
-
-    async with http_session.post(url, json=payload, timeout=45) as resp:
-        if resp.status == 200:
-            data = await resp.json()
-            return data.get("response", "")
-        raise Exception(f"status {resp.status}: {(await resp.text())[:300]}")
-
-
-
-async def ask_openai_responses(model: str, messages: list[dict], timeout: int = 40):
-    """OpenAI Responses API. Optional: used only if OPENAI_API_KEY exists."""
-    if not OPENAI_API_KEY:
-        raise Exception("OPENAI_API_KEY is missing.")
-    if not http_session:
-        raise Exception("HTTP session is not initialized.")
-
-    system_parts = []
-    user_parts = []
-    for m in messages:
-        if m.get("role") == "system":
-            system_parts.append(m.get("content", ""))
-        else:
-            user_parts.append(f"{m.get('role','user')}: {m.get('content','')}")
-
-    payload = {
-        "model": model,
-        "input": [
-            {"role": "system", "content": "\\n\\n".join(system_parts)},
-            {"role": "user", "content": "\\n\\n".join(user_parts)}
-        ],
-    }
-    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-
-    async with http_session.post("https://api.openai.com/v1/responses", json=payload, headers=headers, timeout=timeout) as resp:
-        body = await resp.text()
-        if resp.status != 200:
-            raise Exception(f"status {resp.status}: {body[:400]}")
-        data = json.loads(body)
-
-    if data.get("output_text"):
-        return data["output_text"]
-
-    # Robust fallback parser for response objects.
-    parts = []
-    for item in data.get("output", []) or []:
-        for content in item.get("content", []) or []:
-            if content.get("type") in ("output_text", "text") and content.get("text"):
-                parts.append(content["text"])
-    if parts:
-        return "\\n".join(parts)
-
-    raise Exception("OpenAI response did not contain text output.")
-
-
-async def ask_gemini_generate_content(model: str, messages: list[dict], timeout: int = 40):
-    """Gemini generateContent REST. Optional: used only if GEMINI_API_KEY exists."""
-    if not GEMINI_API_KEY:
-        raise Exception("GEMINI_API_KEY is missing.")
-    if not http_session:
-        raise Exception("HTTP session is not initialized.")
-
-    system_text = "\\n\\n".join([m.get("content", "") for m in messages if m.get("role") == "system"])
-    convo = "\\n\\n".join([f"{m.get('role','user')}: {m.get('content','')}" for m in messages if m.get("role") != "system"])
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{quote(model, safe='')}:generateContent"
-    params = {"key": GEMINI_API_KEY}
-    payload = {
-        "system_instruction": {"parts": [{"text": system_text}]},
-        "contents": [{"role": "user", "parts": [{"text": convo}]}],
-        "generationConfig": {"temperature": 0.8}
-    }
-
-    async with http_session.post(url, params=params, json=payload, timeout=timeout) as resp:
-        body = await resp.text()
-        if resp.status != 200:
-            raise Exception(f"status {resp.status}: {body[:400]}")
-        data = json.loads(body)
-
-    parts = []
-    for cand in data.get("candidates", []) or []:
-        content = cand.get("content", {}) or {}
-        for part in content.get("parts", []) or []:
-            if part.get("text"):
-                parts.append(part["text"])
-
-    if parts:
-        return "\\n".join(parts)
-
-    raise Exception("Gemini response did not contain text output.")
 
 async def run_ai_pipeline(text: str, history: list[dict], user_id: int):
     messages = [{"role": "system", "content": build_system_prompt(user_id)}]
@@ -1732,7 +1770,7 @@ async def run_ai_pipeline(text: str, history: list[dict], user_id: int):
     if OPENAI_API_KEY and OPENAI_MODEL:
         try:
             answer = await ask_openai_responses(OPENAI_MODEL, messages, 45)
-            return enforce_feminine_self_reference(answer)
+            return finalize_ai_answer(answer)
         except Exception as e:
             errors.append(f"OpenAI {OPENAI_MODEL}: {e}")
             logger.warning("OpenAI failed: %s", e)
@@ -1740,77 +1778,253 @@ async def run_ai_pipeline(text: str, history: list[dict], user_id: int):
     if GEMINI_API_KEY and GEMINI_MODEL:
         try:
             answer = await ask_gemini_generate_content(GEMINI_MODEL, messages, 45)
-            return enforce_feminine_self_reference(answer)
+            return finalize_ai_answer(answer)
         except Exception as e:
             errors.append(f"Gemini {GEMINI_MODEL}: {e}")
             logger.warning("Gemini failed: %s", e)
 
-    if OPENROUTER_API_KEY and OPENROUTER_SMART_MODEL:
+    # OpenRouter: use router IDs first, not dead fixed model IDs.
+    # If Render still contains old env values that 404, AION continues to openrouter/auto and openrouter/free.
+    if OPENROUTER_API_KEY:
+        candidates = []
+        candidates.extend(split_model_candidates(OPENROUTER_MODEL_CANDIDATES))
+        candidates.extend([OPENROUTER_SMART_MODEL, OPENROUTER_FALLBACK_MODEL, "openrouter/auto", "openrouter/free"])
+
+        seen = set()
+        for model in [m for m in candidates if m and not (m in seen or seen.add(m))]:
+            try:
+                answer = await ask_openai_compatible(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    OPENROUTER_API_KEY,
+                    model,
+                    messages,
+                    35,
+                    AI_MAX_COMPLETION_TOKENS,
+                )
+                return finalize_ai_answer(answer)
+            except Exception as e:
+                errors.append(f"OpenRouter {model}: {e}")
+                logger.warning("OpenRouter model %s failed: %s", model, e)
+
+        # Last resort: omit model, so OpenRouter uses account/payer default if configured.
         try:
-            return await ask_openai_compatible(
+            answer = await ask_openai_compatible(
                 "https://openrouter.ai/api/v1/chat/completions",
                 OPENROUTER_API_KEY,
-                OPENROUTER_SMART_MODEL,
+                None,
                 messages,
-                25
+                35,
+                AI_MAX_COMPLETION_TOKENS,
             )
+            return finalize_ai_answer(answer)
         except Exception as e:
-            errors.append(f"OpenRouter smart model: {e}")
-            logger.warning("OpenRouter smart model failed: %s", e)
+            errors.append(f"OpenRouter default route: {e}")
+            logger.warning("OpenRouter default route failed: %s", e)
 
+    # Groq: compact prompt and try high-TPM compound-mini before Llama fallbacks.
     if GROQ_API_KEY:
-        try:
-            return await ask_openai_compatible(
-                "https://api.groq.com/openai/v1/chat/completions",
-                GROQ_API_KEY,
-                "llama-3.1-8b-instant",
-                messages,
-                12
-            )
-        except Exception as e:
-            errors.append(f"Groq: {e}")
-            logger.warning("Groq failed: %s", e)
+        groq_messages = compact_messages_for_provider(messages, GROQ_COMPACT_CONTEXT_CHARS)
+        candidates = []
+        candidates.extend(split_model_candidates(GROQ_MODEL_CANDIDATES))
+        candidates.append(GROQ_MODEL)
 
+        seen = set()
+        for model in [m for m in candidates if m and not (m in seen or seen.add(m))]:
+            try:
+                answer = await ask_openai_compatible(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    GROQ_API_KEY,
+                    model,
+                    groq_messages,
+                    18,
+                    min(AI_MAX_COMPLETION_TOKENS, 700),
+                )
+                return finalize_ai_answer(answer)
+            except Exception as e:
+                errors.append(f"Groq {model}: {e}")
+                logger.warning("Groq model %s failed: %s", model, e)
+
+    # Cerebras: current public chat models are not llama3.1-8b. Try current candidates.
     if CEREBRAS_API_KEY:
-        try:
-            return await ask_openai_compatible(
-                "https://api.cerebras.ai/v1/chat/completions",
-                CEREBRAS_API_KEY,
-                "llama3.1-8b",
-                messages,
-                12
-            )
-        except Exception as e:
-            errors.append(f"Cerebras: {e}")
-            logger.warning("Cerebras failed: %s", e)
+        cerebras_messages = compact_messages_for_provider(messages, CEREBRAS_COMPACT_CONTEXT_CHARS)
+        candidates = []
+        candidates.extend(split_model_candidates(CEREBRAS_MODEL_CANDIDATES))
+        candidates.append(CEREBRAS_MODEL)
 
-    if OPENROUTER_API_KEY and OPENROUTER_FALLBACK_MODEL:
-        try:
-            return await ask_openai_compatible(
-                "https://openrouter.ai/api/v1/chat/completions",
-                OPENROUTER_API_KEY,
-                OPENROUTER_FALLBACK_MODEL,
-                messages,
-                18
-            )
-        except Exception as e:
-            errors.append(f"OpenRouter fallback: {e}")
-            logger.warning("OpenRouter fallback failed: %s", e)
-
-    if OLLAMA_BASE_URL:
-        try:
-            return await ask_ollama(text, history)
-        except Exception as e:
-            errors.append(f"Ollama: {e}")
-            logger.warning("Ollama failed: %s", e)
+        seen = set()
+        for model in [m for m in candidates if m and not (m in seen or seen.add(m))]:
+            try:
+                answer = await ask_openai_compatible(
+                    "https://api.cerebras.ai/v1/chat/completions",
+                    CEREBRAS_API_KEY,
+                    model,
+                    cerebras_messages,
+                    25,
+                    AI_MAX_COMPLETION_TOKENS,
+                )
+                return finalize_ai_answer(answer)
+            except Exception as e:
+                errors.append(f"Cerebras {model}: {e}")
+                logger.warning("Cerebras model %s failed: %s", model, e)
 
     return "❌ Все ИИ-провайдеры недоступны:\n" + "\n".join(errors)
+
+
+# =========================
+# SAFE SEARCH QUERY LAYER
+# =========================
+
+# AION may accept a large user internet-search request up to 8000 characters.
+# Important: Tavily, Yandex and Google query fields cannot safely receive 8000 chars directly.
+# Therefore AION accepts up to INTERNET_SEARCH_INPUT_MAX_CHARS, then splits it into safe API subqueries.
+INTERNET_SEARCH_INPUT_MAX_CHARS = int(os.getenv("INTERNET_SEARCH_INPUT_MAX_CHARS") or 8000)
+SEARCH_QUERY_MAX_CHARS = int(os.getenv("SEARCH_QUERY_MAX_CHARS") or 380)
+SEARCH_MAX_SUBQUERIES = int(os.getenv("SEARCH_MAX_SUBQUERIES") or 8)
+
+def normalize_internet_search_input(query: str, max_chars: int = INTERNET_SEARCH_INPUT_MAX_CHARS) -> str:
+    """
+    Accepts large user search text up to 8000 chars.
+    This is the external/user-facing limit for internet search.
+    """
+    q = str(query or "")
+    q = re.sub(r"<[^>]+>", " ", q)
+    q = q.replace("\r", " ").replace("\t", " ")
+    q = re.sub(r"\s+", " ", q).strip()
+
+    if len(q) <= max_chars:
+        return q
+
+    cut = q[:max_chars]
+    last_space = cut.rfind(" ")
+    if last_space > 1000:
+        cut = cut[:last_space]
+    return cut.strip()
+
+
+def normalize_search_query(query: str, max_chars: int = SEARCH_QUERY_MAX_CHARS) -> str:
+    """
+    Creates ONE safe API query under ~400 chars.
+    Tavily and Yandex reject very long query strings, so every individual API request is kept short.
+    """
+    q = normalize_internet_search_input(query, INTERNET_SEARCH_INPUT_MAX_CHARS)
+    q = q.replace("\n", " ")
+    q = re.sub(r"\s+", " ", q).strip()
+
+    if len(q) <= max_chars:
+        return q
+
+    cut = q[:max_chars]
+    last_space = cut.rfind(" ")
+    if last_space > 120:
+        cut = cut[:last_space]
+
+    return cut.strip()
+
+
+def build_short_live_search_query(user_text: str) -> str:
+    """
+    Converts any user text into one compact live-search query.
+    """
+    q = normalize_internet_search_input(user_text, INTERNET_SEARCH_INPUT_MAX_CHARS)
+
+    # Remove common command/wake prefixes without damaging the request.
+    q = re.sub(r"^/search\s+", "", q, flags=re.IGNORECASE).strip()
+    q = re.sub(r"^(aion|аион|айон|эйон|кохай)[,:\s]+", "", q, flags=re.IGNORECASE).strip()
+
+    return normalize_search_query(q, SEARCH_QUERY_MAX_CHARS)
+
+
+def build_search_subqueries(user_text: str) -> list[str]:
+    """
+    Accepts up to 8000 characters and produces multiple safe subqueries.
+    This lets AION search a large request while respecting the hard limits of external search APIs.
+    """
+    raw = normalize_internet_search_input(user_text, INTERNET_SEARCH_INPUT_MAX_CHARS)
+    raw = re.sub(r"^/search\s+", "", raw, flags=re.IGNORECASE).strip()
+    raw = re.sub(r"^(aion|аион|айон|эйон|кохай)[,:\s]+", "", raw, flags=re.IGNORECASE).strip()
+
+    if not raw:
+        return []
+
+    if len(raw) <= SEARCH_QUERY_MAX_CHARS:
+        return [normalize_search_query(raw)]
+
+    # Split by sentence-like boundaries first.
+    parts = re.split(r"(?<=[.!?;:])\s+|\n+", raw)
+    chunks = []
+    current = ""
+
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+
+        if len(part) > SEARCH_QUERY_MAX_CHARS:
+            # Hard split very long fragments by words.
+            words = part.split()
+            local = ""
+            for w in words:
+                if len(local) + len(w) + 1 > SEARCH_QUERY_MAX_CHARS:
+                    if local.strip():
+                        chunks.append(local.strip())
+                    local = w
+                else:
+                    local += (" " if local else "") + w
+            if local.strip():
+                chunks.append(local.strip())
+            continue
+
+        if len(current) + len(part) + 1 > SEARCH_QUERY_MAX_CHARS:
+            if current.strip():
+                chunks.append(current.strip())
+            current = part
+        else:
+            current += (" " if current else "") + part
+
+    if current.strip():
+        chunks.append(current.strip())
+
+    # Deduplicate and limit number of live API calls.
+    clean = []
+    seen = set()
+    for chunk in chunks:
+        q = normalize_search_query(chunk)
+        if q and q.lower() not in seen:
+            seen.add(q.lower())
+            clean.append(q)
+        if len(clean) >= SEARCH_MAX_SUBQUERIES:
+            break
+
+    return clean or [normalize_search_query(raw)]
+
+
+def explain_search_errors(errors: list[str]) -> str:
+    if not errors:
+        return ""
+
+    friendly = []
+    for err in errors:
+        e = str(err)
+        if "Query is too long" in e or "Length must be less than or equal to 400" in e:
+            friendly.append("часть поисковых систем отклонила слишком длинный запрос; я сократила его на безопасные подзапросы")
+        elif "Custom Search JSON API" in e or "Google status 403" in e:
+            friendly.append("Google Custom Search JSON API не активирован/недоступен для проекта в Google Cloud")
+        else:
+            friendly.append(e[:220])
+
+    return "\n".join(f"• {x}" for x in friendly)
+
 
 # =========================
 # SEARCH ENGINES
 # =========================
 
 async def search_tavily(query: str):
+    query = build_short_live_search_query(query)
+    if not query:
+        return []
+    if not TAVILY_SEARCH_ENABLED:
+        return []
     if not TAVILY_API_KEY:
         return []
 
@@ -1848,6 +2062,9 @@ async def search_tavily(query: str):
 
 
 async def search_google(query: str):
+    query = build_short_live_search_query(query)
+    if not query:
+        return []
     if not GOOGLE_SEARCH_API_KEY or not GOOGLE_SEARCH_ENGINE_ID:
         return []
 
@@ -1872,6 +2089,9 @@ async def search_google(query: str):
 
 
 async def search_yandex(query: str):
+    query = build_short_live_search_query(query)
+    if not query:
+        return []
     if not YANDEX_SEARCH_API_KEY or not YANDEX_FOLDER_ID:
         return []
 
@@ -1934,17 +2154,30 @@ async def search_yandex(query: str):
 
 
 async def search_all_engines(query: str):
-    tasks = [
-        search_tavily(query),
-        search_google(query),
-        search_yandex(query),
-    ]
+    """
+    Tavily-only live internet search.
+    Google and Yandex are removed from active runtime to avoid noisy 403/permission errors.
+    """
+    subqueries = build_search_subqueries(query)
+
+    if not subqueries:
+        return [], ["Search query is empty after normalization."]
+
+    if not TAVILY_SEARCH_ENABLED:
+        return [], ["Tavily search is disabled."]
+
+    tasks = []
+    task_names = []
+
+    for idx, subquery in enumerate(subqueries, start=1):
+        tasks.append(search_tavily(subquery))
+        task_names.append(f"Tavily[{idx}]")
 
     raw_results = await asyncio.gather(*tasks, return_exceptions=True)
     final = []
     errors = []
 
-    for name, result in zip(["Tavily", "Google", "Yandex"], raw_results):
+    for name, result in zip(task_names, raw_results):
         if isinstance(result, Exception):
             errors.append(f"{name}: {result}")
         else:
@@ -1965,7 +2198,16 @@ async def answer_with_search(query: str, user_id: int):
     results, errors = await search_all_engines(query)
 
     if not results:
-        return "❌ Все поисковые движки не вернули результатов.\n" + "\n".join(errors)
+        safe_query = build_short_live_search_query(query)
+        friendly_errors = explain_search_errors(errors)
+        return (
+            "❌ Я не смогла получить актуальные данные из интернета.\n"
+            f"🔎 Лимит входного интернет-запроса: до {INTERNET_SEARCH_INPUT_MAX_CHARS} символов.\n"
+            f"🔎 Безопасный поисковый запрос: {safe_query}\n\n"
+            "Причина:\n" + (friendly_errors or "\n".join(errors))
+        )
+
+    subqueries_used = build_search_subqueries(query)
 
     source_text = ""
     for i, r in enumerate(results[:12], start=1):
@@ -1986,7 +2228,11 @@ async def answer_with_search(query: str, user_id: int):
     answer = await run_ai_pipeline(prompt, [], user_id)
     answer = enforce_feminine_self_reference(answer)
 
-    out = f"🔍 <b>Поиск:</b> {html.escape(query)}\n\n"
+    safe_query_for_output = build_short_live_search_query(query)
+    out = f"🔍 <b>Поиск:</b> {html.escape(safe_query_for_output)}\n"
+    if len(query) > SEARCH_QUERY_MAX_CHARS:
+        out += f"🧩 <b>Большой запрос принят:</b> до {INTERNET_SEARCH_INPUT_MAX_CHARS} символов, подзапросов: {len(subqueries_used)}\n"
+    out += "\n"
     out += f"🧠 <b>AION:</b>\n{html.escape(answer)}\n\n"
     out += "🌐 <b>Источники:</b>\n"
     for r in results[:8]:
@@ -2228,8 +2474,7 @@ class EvolutionCore:
         "github_commit_file",
         "render_trigger_deploy",
         "POLLINATIONS_ENABLED",
-        "GOOGLE_SEARCH_API_KEY",
-        "YANDEX_SEARCH_API_KEY",
+        "TAVILY_API_KEY",
         "AION_BUILTIN_WORLD_CORE_B64",
         "answer_from_builtin_world_core",
     ]
@@ -2386,11 +2631,7 @@ async def health_matrix():
             {"Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}"}
         ))
 
-    if GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_ENGINE_ID:
-        checks.append(check_http_get(
-            "Google Search",
-            f"https://www.googleapis.com/customsearch/v1?key={quote(GOOGLE_SEARCH_API_KEY)}&cx={quote(GOOGLE_SEARCH_ENGINE_ID)}&q=ping&num=1"
-        ))
+    # Google Search check disabled in Tavily-only build.
 
     results = {}
     if checks:
@@ -2673,13 +2914,16 @@ async def cmd_status(message: types.Message):
         f"GROQ_API_KEY: {env_state(GROQ_API_KEY)}\n"
         f"CEREBRAS_API_KEY: {env_state(CEREBRAS_API_KEY)}\n"
         f"OPENROUTER_API_KEY: {env_state(OPENROUTER_API_KEY)}\n"
+        f"OPENROUTER_MODELS: <code>{html.escape(OPENROUTER_MODEL_CANDIDATES)}</code>\n"
+        f"GROQ_MODELS: <code>{html.escape(GROQ_MODEL_CANDIDATES)}</code>\n"
+        f"CEREBRAS_MODELS: <code>{html.escape(CEREBRAS_MODEL_CANDIDATES)}</code>\n"
         f"OPENROUTER_SMART_MODEL: <code>{html.escape(OPENROUTER_SMART_MODEL)}</code>\n"
-        f"OLLAMA_BASE_URL: {env_state(OLLAMA_BASE_URL)}\n"
+        f"OLLAMA_BASE_URL: ⚪ DISABLED\n"
         f"WORLD_KNOWLEDGE_AUTO_SEARCH: <code>{str(WORLD_KNOWLEDGE_AUTO_SEARCH).upper()}</code>\n\n"
         f"TAVILY_API_KEY: {env_state(TAVILY_API_KEY)}\n"
-        f"GOOGLE_SEARCH_API_KEY: {env_state(GOOGLE_SEARCH_API_KEY)}\n"
-        f"GOOGLE_SEARCH_ENGINE_ID: {env_state(GOOGLE_SEARCH_ENGINE_ID)}\n"
-        f"YANDEX_SEARCH_API_KEY: {env_state(YANDEX_SEARCH_API_KEY)}\n"
+        f"GOOGLE_SEARCH_API_KEY: ⚪ DISABLED\n"
+        f"GOOGLE_SEARCH_ENGINE_ID: ⚪ DISABLED\n"
+        f"YANDEX_SEARCH_API_KEY: ⚪ DISABLED\n"
         f"YANDEX_FOLDER_ID: {env_state(YANDEX_FOLDER_ID)}\n\n"
         f"GITHUB_TOKEN: {env_state(GITHUB_TOKEN)}\n"
         f"GITHUB_REPO: <code>{html.escape(GITHUB_REPO)}</code>\n"
@@ -2992,23 +3236,6 @@ async def cmd_cloudflare(message: types.Message):
     except Exception as e:
         await status.edit_text(f"❌ Ошибка Cloudflare: {e}")
 
-
-@dp.message(Command("ollama"))
-async def cmd_ollama(message: types.Message):
-    if not OLLAMA_BASE_URL:
-        return await message.answer("❌ OLLAMA_BASE_URL отсутствует.")
-
-    prompt = message.text.replace("/ollama", "", 1).strip()
-    if not prompt:
-        return await message.answer("⚠️ Использование: /ollama [текст]")
-
-    status = await message.answer("🦙 Спрашиваю локальную ноду...")
-    try:
-        answer = await ask_ollama(prompt, get_memory(message.from_user.id, 6))
-        await status.delete()
-        await send_split(message, html.escape(answer), "HTML")
-    except Exception as e:
-        await status.edit_text(f"❌ Ошибка Ollama: {e}")
 
 
 @dp.message(Command("remember"))
