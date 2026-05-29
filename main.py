@@ -152,6 +152,27 @@ MAX_HISTORY_MESSAGES = int(os.getenv("MAX_HISTORY_MESSAGES") or 12)
 
 DB_FILE = os.getenv("DB_FILE", "matrix_memory.db")
 
+
+ANDROID_PERMISSION_MANIFEST_BLOCK = """
+<uses-permission android:name="android.permission.INTERNET" />
+<uses-permission android:name="android.permission.CAMERA" />
+<uses-permission android:name="android.permission.RECORD_AUDIO" />
+<uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+
+<uses-feature
+    android:name="android.hardware.camera"
+    android:required="false" />
+<uses-feature
+    android:name="android.hardware.microphone"
+    android:required="false" />
+"""
+
+
 bot = None
 dp = Dispatcher()
 http_session = None
@@ -3007,6 +3028,7 @@ async def cmd_start(message: types.Message):
         "🔊 <code>/sfx prompt</code> — создать звук.\n"
         "🗣 <code>/voice текст</code> — озвучить текст.\n"
         "🎙 Голосовое сообщение — распознать и ответить.\n"
+        "📱 <code>/permissions</code> — Android camera/mic/speaker permissions.\n"
         "🧠 <code>/remember факт</code> — запомнить важное.\n"
         "📚 <code>/memory</code> — показать твою память.\n\n"
         "Я могу помогать с кодом, поиском, анализом, текстами, GitHub, Render, Cloudflare и проектами."
@@ -3200,6 +3222,22 @@ async def handle_live_location_update(message: types.Message):
 
 
 
+
+@dp.message(Command("permissions", "android_permissions"))
+async def cmd_permissions(message: types.Message):
+    text = (
+        "📱 <b>Разрешения камеры / микрофона / динамика</b>\n\n"
+        "В Telegram-боте AION не может сама запросить доступ к камере, микрофону или динамику телефона. "
+        "Telegram разрешает боту получать только то, что пользователь сам отправил: фото, видео, voice, audio, location.\n\n"
+        "Для Android-версии разрешения добавляются в <code>AndroidManifest.xml</code> и запрашиваются на телефоне при первом запуске.\n\n"
+        "🔊 Динамик: отдельного permission обычно не требует. Приложение может воспроизводить звук без отдельного доступа. "
+        "<code>MODIFY_AUDIO_SETTINGS</code> нужен только для управления аудио-настройками.\n\n"
+        "<b>AndroidManifest.xml:</b>\n"
+        f"<pre>{html.escape(ANDROID_PERMISSION_MANIFEST_BLOCK.strip())}</pre>"
+    )
+    await send_split(message, text, parse_mode="HTML")
+
+
 @dp.message(Command("status"))
 async def cmd_status(message: types.Message):
     if not is_owner(message.from_user.id):
@@ -3233,6 +3271,14 @@ f"GITHUB_TOKEN: {env_state(GITHUB_TOKEN)}\n"
         f"HUGGINGFACE_API_KEY: {env_state(HUGGINGFACE_API_KEY)}\n"
         f"FAL_API_KEY: {env_state(FAL_API_KEY)}\n"
         f"POLLINATIONS_ENABLED: <code>{str(POLLINATIONS_ENABLED).upper()}</code>\n\n"
+        f"OPENAI_IMAGE_MODEL: <code>{html.escape(OPENAI_IMAGE_MODEL)}</code>\n"
+        f"OPENAI_TTS_MODEL: <code>{html.escape(OPENAI_TTS_MODEL)}</code>\n"
+        f"OPENAI_TRANSCRIBE_MODEL: <code>{html.escape(OPENAI_TRANSCRIBE_MODEL)}</code>\n"
+        f"FAL_VIDEO_MODEL: <code>{html.escape(FAL_VIDEO_MODEL)}</code>\n"
+        f"FAL_IMAGE_TO_VIDEO_MODEL: <code>{html.escape(FAL_IMAGE_TO_VIDEO_MODEL)}</code>\n"
+        f"FAL_MUSIC_MODEL: <code>{html.escape(FAL_MUSIC_MODEL)}</code>\n"
+        f"FAL_SOUND_FX_MODEL: <code>{html.escape(FAL_SOUND_FX_MODEL)}</code>\n"
+        f"AION_VOICE_REPLY_ENABLED: {str(AION_VOICE_REPLY_ENABLED).upper()}\n\n"
         f"AION_PUBLIC_URL: <code>{html.escape(AION_PUBLIC_URL)}</code>\n"
         f"API_ADMIN_KEY: {env_state(API_ADMIN_KEY)}\n"
         f"AION_TIMEZONE: <code>{html.escape(AION_TIMEZONE)}</code>\n"
@@ -3865,7 +3911,11 @@ async def handle_voice_message(message: types.Message):
         save_memory(user_id, "assistant", answer)
 
         await status.delete()
-        await send_split(message, f"🎙️ <b>Я услышала:</b>\n{html.escape(transcript)}\n\n🧠 <b>AION:</b>\n{html.escape(answer)}", parse_mode="HTML")
+        await send_split(
+            message,
+            f"🎙️ <b>Я услышала:</b>\n{html.escape(transcript)}\n\n🧠 <b>AION:</b>\n{html.escape(answer)}",
+            parse_mode="HTML"
+        )
 
         if AION_VOICE_REPLY_ENABLED:
             voice_audio = await openai_tts_bytes(answer)
@@ -3894,42 +3944,118 @@ def _starts_with_any(text: str, prefixes: list[str]) -> bool:
 
 @dp.message(lambda message: message.text and _starts_with_any(message.text, ["нарисуй", "создай фото", "сгенерируй фото", "сделай картинку", "draw ", "generate image"]))
 async def natural_image_handler(message: types.Message):
+    if not cooldown(message.from_user.id):
+        return await message.answer("⚠️ Подожди несколько секунд.")
+
     prompt = _strip_media_prefix(message.text, ["нарисуй", "создай фото", "сгенерируй фото", "сделай картинку", "draw", "generate image"])
     if not prompt:
         return await message.answer("Что именно нарисовать?")
-    fake_message = message
-    fake_message.text = "/image " + prompt
-    await cmd_image(fake_message)
+
+    status = await message.answer("🖼️ Генерирую изображение...")
+    try:
+        result = await generate_image(prompt)
+        await status.delete()
+        if result["type"] == "bytes":
+            await message.answer_photo(
+                photo=BufferedInputFile(result["data"], filename="aion_image.png"),
+                caption=f"🎨 <b>Prompt:</b> {html.escape(prompt)}",
+                parse_mode="HTML"
+            )
+        else:
+            await message.answer_photo(
+                photo=result["data"],
+                caption=f"🎨 <b>Prompt:</b> {html.escape(prompt)}",
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        await status.edit_text(f"❌ Ошибка image: {e}")
 
 
 @dp.message(lambda message: message.text and _starts_with_any(message.text, ["создай видео", "сгенерируй видео", "сделай видео", "video "]))
 async def natural_video_handler(message: types.Message):
+    if not cooldown(message.from_user.id):
+        return await message.answer("⚠️ Подожди несколько секунд.")
+
     prompt = _strip_media_prefix(message.text, ["создай видео", "сгенерируй видео", "сделай видео", "video"])
     if not prompt:
         return await message.answer("Какое видео создать?")
-    fake_message = message
-    fake_message.text = "/video " + prompt
-    await cmd_video(fake_message)
+
+    status = await message.answer("🎥 Генерирую видео. Это может занять время...")
+    try:
+        url = await generate_video(prompt)
+        await status.delete()
+        await message.answer_video(
+            video=url,
+            caption=f"🎥 <b>Prompt:</b> {html.escape(prompt)}",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await status.edit_text(f"❌ Ошибка video: {e}")
 
 
 @dp.message(lambda message: message.text and _starts_with_any(message.text, ["создай музыку", "сделай музыку", "сгенерируй музыку", "music "]))
 async def natural_music_handler(message: types.Message):
+    if not cooldown(message.from_user.id):
+        return await message.answer("⚠️ Подожди несколько секунд.")
+
     prompt = _strip_media_prefix(message.text, ["создай музыку", "сделай музыку", "сгенерируй музыку", "music"])
     if not prompt:
         return await message.answer("Какую музыку создать?")
-    fake_message = message
-    fake_message.text = "/music " + prompt
-    await cmd_music(fake_message)
+
+    status = await message.answer("🎼 Генерирую музыку...")
+    try:
+        audio = await generate_music(prompt)
+        await status.delete()
+        await message.answer_audio(
+            audio=BufferedInputFile(audio, filename="aion_music.wav"),
+            caption=f"🎼 <b>Prompt:</b> {html.escape(prompt)}",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await status.edit_text(f"❌ Ошибка music: {e}")
+
+
+@dp.message(lambda message: message.text and _starts_with_any(message.text, ["создай звук", "сгенерируй звук", "sfx "]))
+async def natural_sfx_handler(message: types.Message):
+    if not cooldown(message.from_user.id):
+        return await message.answer("⚠️ Подожди несколько секунд.")
+
+    prompt = _strip_media_prefix(message.text, ["создай звук", "сгенерируй звук", "sfx"])
+    if not prompt:
+        return await message.answer("Какой звук создать?")
+
+    status = await message.answer("🔊 Генерирую звук...")
+    try:
+        audio = await generate_sfx(prompt)
+        await status.delete()
+        await message.answer_audio(
+            audio=BufferedInputFile(audio, filename="aion_sfx.wav"),
+            caption=f"🔊 <b>Prompt:</b> {html.escape(prompt)}",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await status.edit_text(f"❌ Ошибка sfx: {e}")
 
 
 @dp.message(lambda message: message.text and _starts_with_any(message.text, ["озвучь", "прочитай голосом", "скажи голосом", "voice "]))
 async def natural_voice_handler(message: types.Message):
+    if not cooldown(message.from_user.id):
+        return await message.answer("⚠️ Подожди несколько секунд.")
+
     text = _strip_media_prefix(message.text, ["озвучь", "прочитай голосом", "скажи голосом", "voice"])
     if not text:
         return await message.answer("Что озвучить?")
-    fake_message = message
-    fake_message.text = "/voice " + text
-    await cmd_voice(fake_message)
+
+    status = await message.answer("🗣️ Озвучиваю...")
+    try:
+        audio = await openai_tts_bytes(text)
+        await status.delete()
+        await message.answer_audio(
+            audio=BufferedInputFile(audio, filename="aion_voice.mp3"),
+            caption="🎙️ Озвучка готова."
+        )
+    except Exception as e:
+        await status.edit_text(f"❌ Ошибка voice: {e}")
 
 
 @dp.message()
